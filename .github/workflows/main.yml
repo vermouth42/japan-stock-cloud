@@ -1,0 +1,805 @@
+name: Update stock prices
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # 平日18:20ごろ（日本時間）
+    # GitHub ActionsのcronはUTC
+    - cron: "20 9 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-price-update
+  cancel-in-progress: false
+
+jobs:
+
+  update:
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 20
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      - name: Download 100 Japanese stocks
+        shell: bash
+        run: |
+
+          cat > update_prices.py <<'PYTHON'
+
+          import csv
+          import json
+          import time
+          import urllib.request
+          import urllib.parse
+
+          from datetime import datetime
+          from datetime import timedelta
+          from datetime import timezone
+
+
+          JST = timezone(timedelta(hours=9))
+
+          LOOKBACK_DAYS = 240
+
+
+          CODES = [
+
+              "1982",
+              "2354",
+              "2737",
+              "278A",
+              "285A",
+              "3131",
+              "336A",
+              "3653",
+              "3907",
+              "4052",
+              "4075",
+              "4418",
+              "4440",
+              "4661",
+              "4667",
+              "5802",
+              "5803",
+              "5885",
+              "593A",
+              "6146",
+              "6203",
+              "6227",
+              "6504",
+              "6622",
+              "6652",
+              "6701",
+              "6862",
+              "6920",
+              "7011",
+              "7012",
+              "9432",
+
+              "186A",
+              "290A",
+              "464A",
+              "9348",
+              "4592",
+              "4894",
+              "219A",
+              "4493",
+              "3692",
+              "4425",
+              "3350",
+              "8105",
+
+              "6208",
+              "6946",
+              "7721",
+              "7013",
+              "7224",
+              "5256",
+              "4274",
+              "4011",
+              "5132",
+              "5574",
+              "5572",
+              "3778",
+              "2326",
+              "3040",
+              "3968",
+              "436A",
+              "4475",
+              "5599",
+              "4056",
+
+              "6315",
+              "6323",
+              "6525",
+              "6526",
+              "6857",
+              "6871",
+              "6855",
+              "6668",
+              "6254",
+              "6890",
+              "7735",
+              "7729",
+
+              "5801",
+              "5805",
+              "1942",
+              "1944",
+              "1969",
+              "4063",
+
+              "4884",
+              "4588",
+              "4593",
+              "4893",
+              "4889",
+              "7777",
+              "4576",
+              "4978",
+              "2395",
+              "4565",
+              "4891",
+              "4892",
+
+              "7711",
+              "5310",
+              "6378",
+              "5659",
+              "1963",
+              "6331",
+
+              "3825",
+              "2315"
+
+          ]
+
+
+          def download_json(url):
+
+              request = urllib.request.Request(
+
+                  url,
+
+                  headers={
+                      "User-Agent": "Mozilla/5.0"
+                  }
+
+              )
+
+              with urllib.request.urlopen(
+                  request,
+                  timeout=20
+              ) as response:
+
+                  return json.loads(
+                      response
+                      .read()
+                      .decode("utf-8")
+                  )
+
+
+          def average(values, days):
+
+              if len(values) < days:
+                  return ""
+
+              target = values[-days:]
+
+              if any(
+                  value is None
+                  for value in target
+              ):
+                  return ""
+
+              return (
+                  sum(target)
+                  /
+                  len(target)
+              )
+
+
+          def number(value):
+
+              if value == "":
+                  return ""
+
+              if value is None:
+                  return ""
+
+              return (
+                  f"{float(value):.6f}"
+                  .rstrip("0")
+                  .rstrip(".")
+              )
+
+
+          def get_stock(code):
+
+              now = datetime.now(timezone.utc)
+
+              start = (
+                  now
+                  -
+                  timedelta(days=LOOKBACK_DAYS)
+              )
+
+
+              ticker = urllib.parse.quote(
+                  code + ".T"
+              )
+
+
+              url = (
+
+                  "https://query1.finance.yahoo.com"
+                  "/v8/finance/chart/"
+                  + ticker
+                  + "?period1="
+                  + str(int(start.timestamp()))
+                  + "&period2="
+                  + str(int(now.timestamp()))
+                  + "&interval=1d"
+                  + "&events=history"
+                  + "&includeAdjustedClose=true"
+
+              )
+
+
+              data = download_json(url)
+
+
+              result_list = (
+                  data
+                  .get("chart", {})
+                  .get("result")
+              )
+
+
+              if not result_list:
+
+                  raise RuntimeError(
+                      "Yahoo Finance returned no result"
+                  )
+
+
+              result = result_list[0]
+
+
+              timestamps = (
+                  result.get("timestamp")
+                  or []
+              )
+
+
+              indicators = (
+                  result.get("indicators", {})
+              )
+
+
+              quotes = (
+                  indicators.get("quote")
+                  or [{}]
+              )
+
+
+              quote = quotes[0]
+
+
+              opens = quote.get("open") or []
+              highs = quote.get("high") or []
+              lows = quote.get("low") or []
+              closes = quote.get("close") or []
+              volumes = quote.get("volume") or []
+
+
+              rows = []
+
+
+              for index, timestamp in enumerate(
+                  timestamps
+              ):
+
+                  if index >= len(closes):
+                      continue
+
+
+                  open_price = opens[index]
+                  high_price = highs[index]
+                  low_price = lows[index]
+                  close_price = closes[index]
+
+
+                  if (
+
+                      open_price is None
+                      or high_price is None
+                      or low_price is None
+                      or close_price is None
+
+                  ):
+                      continue
+
+
+                  volume = 0
+
+                  if index < len(volumes):
+
+                      if volumes[index] is not None:
+
+                          volume = volumes[index]
+
+
+                  date = (
+
+                      datetime
+                      .fromtimestamp(
+                          timestamp,
+                          timezone.utc
+                      )
+                      .astimezone(JST)
+                      .date()
+                      .isoformat()
+
+                  )
+
+
+                  rows.append({
+
+                      "date": date,
+
+                      "open": float(open_price),
+
+                      "high": float(high_price),
+
+                      "low": float(low_price),
+
+                      "close": float(close_price),
+
+                      "volume": int(volume)
+
+                  })
+
+
+              return rows
+
+
+          def calculate(code, rows):
+
+              output = []
+
+              closes = []
+              volumes = []
+              true_ranges = []
+
+              previous_close = None
+
+
+              for row in rows:
+
+                  close = row["close"]
+
+                  closes.append(close)
+
+                  volumes.append(
+                      float(row["volume"])
+                  )
+
+
+                  tr = (
+                      row["high"]
+                      -
+                      row["low"]
+                  )
+
+
+                  if previous_close is not None:
+
+                      tr = max(
+
+                          tr,
+
+                          abs(
+                              row["high"]
+                              -
+                              previous_close
+                          ),
+
+                          abs(
+                              row["low"]
+                              -
+                              previous_close
+                          )
+
+                      )
+
+
+                  true_ranges.append(tr)
+
+
+                  ma5 = average(
+                      closes,
+                      5
+                  )
+
+                  ma25 = average(
+                      closes,
+                      25
+                  )
+
+                  ma75 = average(
+                      closes,
+                      75
+                  )
+
+
+                  volume5 = average(
+                      volumes,
+                      5
+                  )
+
+                  volume25 = average(
+                      volumes,
+                      25
+                  )
+
+
+                  volume_ratio = ""
+
+                  if (
+                      volume25 != ""
+                      and volume25 != 0
+                  ):
+
+                      volume_ratio = (
+                          row["volume"]
+                          /
+                          volume25
+                      )
+
+
+                  atr14 = average(
+                      true_ranges,
+                      14
+                  )
+
+
+                  atr_percent = ""
+
+                  if (
+                      atr14 != ""
+                      and close != 0
+                  ):
+
+                      atr_percent = (
+                          atr14
+                          /
+                          close
+                          *
+                          100
+                      )
+
+
+                  output.append([
+
+                      row["date"],
+
+                      code,
+
+                      number(
+                          row["open"]
+                      ),
+
+                      number(
+                          row["high"]
+                      ),
+
+                      number(
+                          row["low"]
+                      ),
+
+                      number(
+                          row["close"]
+                      ),
+
+                      number(ma5),
+
+                      number(ma25),
+
+                      number(ma75),
+
+                      "",
+
+                      str(
+                          row["volume"]
+                      ),
+
+                      number(volume5),
+
+                      number(volume25),
+
+                      number(
+                          volume_ratio
+                      ),
+
+                      number(tr),
+
+                      number(atr14),
+
+                      number(
+                          atr_percent
+                      )
+
+                  ])
+
+
+                  previous_close = close
+
+
+              return output
+
+
+          all_rows = []
+
+          successful = []
+
+          failed = []
+
+
+          total = len(CODES)
+
+
+          for index, code in enumerate(
+              CODES,
+              start=1
+          ):
+
+              try:
+
+                  rows = get_stock(code)
+
+
+                  if not rows:
+
+                      raise RuntimeError(
+                          "No price rows"
+                      )
+
+
+                  calculated = calculate(
+                      code,
+                      rows
+                  )
+
+
+                  all_rows.extend(
+                      calculated
+                  )
+
+
+                  successful.append(
+                      code
+                  )
+
+
+                  print(
+
+                      f"[{index}/{total}] "
+                      f"OK {code} "
+                      f"{len(rows)} rows"
+
+                  )
+
+
+              except Exception as error:
+
+                  failed.append({
+
+                      "code": code,
+
+                      "error": str(error)
+
+                  })
+
+
+                  print(
+
+                      f"[{index}/{total}] "
+                      f"FAILED {code}: "
+                      f"{error}"
+
+                  )
+
+
+              time.sleep(0.2)
+
+
+          all_rows.sort(
+
+              key=lambda row: (
+                  row[0],
+                  row[1]
+              ),
+
+              reverse=True
+
+          )
+
+
+          header = [
+
+              "日付",
+              "コード",
+              "始値",
+              "高値",
+              "安値",
+              "終値",
+              "5日株価平均",
+              "25日株価平均",
+              "75日株価平均",
+              "SBI VWAP",
+              "出来高",
+              "5日平均出来高",
+              "25日平均出来高",
+              "出来高倍率",
+              "TR",
+              "ATR14",
+              "ATR%"
+
+          ]
+
+
+          with open(
+
+              "prices.csv",
+
+              "w",
+
+              encoding="utf-8-sig",
+
+              newline=""
+
+          ) as file:
+
+              writer = csv.writer(file)
+
+              writer.writerow(header)
+
+              writer.writerows(
+                  all_rows
+              )
+
+
+          latest_date = None
+
+
+          if all_rows:
+
+              latest_date = max(
+                  row[0]
+                  for row in all_rows
+              )
+
+
+          status = {
+
+              "updated_at_jst":
+                  datetime
+                  .now(JST)
+                  .isoformat(
+                      timespec="seconds"
+                  ),
+
+              "latest_market_date":
+                  latest_date,
+
+              "stocks_total":
+                  total,
+
+              "stocks_success":
+                  len(successful),
+
+              "stocks_failed":
+                  len(failed),
+
+              "rows":
+                  len(all_rows),
+
+              "failed":
+                  failed
+
+          }
+
+
+          with open(
+
+              "status.json",
+
+              "w",
+
+              encoding="utf-8"
+
+          ) as file:
+
+              json.dump(
+
+                  status,
+
+                  file,
+
+                  ensure_ascii=False,
+
+                  indent=2
+
+              )
+
+
+          print()
+
+          print(
+              json.dumps(
+                  status,
+                  ensure_ascii=False,
+                  indent=2
+              )
+          )
+
+
+          if not successful:
+
+              raise SystemExit(
+                  "All stock downloads failed"
+              )
+
+          PYTHON
+
+
+          python update_prices.py
+
+
+      - name: Save prices to GitHub
+        shell: bash
+        run: |
+
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+
+          git add \
+            prices.csv \
+            status.json
+
+
+          if git diff --cached --quiet
+          then
+
+            echo "No data changes"
+
+          else
+
+            git commit \
+              -m "Update Japanese stock prices"
+
+            git push
+
+          fi
