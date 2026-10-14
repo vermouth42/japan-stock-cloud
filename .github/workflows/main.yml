@@ -771,7 +771,64 @@ jobs:
 
           python update_prices.py
 
+      - name: Build latest 100-stock snapshot
+        shell: bash
+        run: |
 
+          python - <<'PYTHON'
+
+          import csv
+
+          seen = set()
+
+          latest = []
+
+          with open(
+              "prices.csv",
+              encoding="utf-8-sig",
+              newline=""
+          ) as file:
+
+              reader = csv.reader(file)
+
+              header = next(reader)
+
+              for row in reader:
+
+                  if len(row) < 13:
+                      continue
+
+                  code = row[1]
+
+                  if code in seen:
+                      continue
+
+                  seen.add(code)
+
+                  # A:Mだけ使用
+                  latest.append(
+                      row[:13]
+                  )
+
+          with open(
+              "latest.csv",
+              "w",
+              encoding="utf-8-sig",
+              newline=""
+          ) as file:
+
+              writer = csv.writer(file)
+
+              # ヘッダーなし
+              writer.writerows(latest)
+
+          print(
+              "latest.csv:",
+              len(latest),
+              "stocks"
+          )
+
+          PYTHON
       - name: Save prices to GitHub
         shell: bash
         run: |
@@ -787,6 +844,7 @@ jobs:
 
           git add \
             prices.csv \
+            latest.csv \
             status.json
 
 
