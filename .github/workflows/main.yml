@@ -6,7 +6,7 @@ on:
   schedule:
     # 平日18:20ごろ（日本時間）
     # GitHub ActionsのcronはUTC
-    - cron: "20 9 * * 1-5"
+    - cron: "30 11 * * 1-5"
 
 permissions:
   contents: write
