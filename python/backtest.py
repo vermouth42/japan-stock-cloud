@@ -124,6 +124,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="25日線割れ判定の余裕（ATR 倍）")
     parser.add_argument("--slippage", type=float, default=1.0, help="成行・逆指値のスリッページ（円）")
     parser.add_argument("--trades", default="", help="全トレードの出力先 CSV")
+    parser.add_argument("--trend-ma", type=int, default=defaults.trend_ma_len,
+                        help="長期トレンドフィルター: 終値がこの日数の移動平均より上の銘柄だけ買う（0で無効）")
     parser.add_argument("--market", default="", help="地合いフィルターに使う指数の CSV（fetch_history.py が作る）")
     parser.add_argument("--market-ma", type=int, default=75, help="指数の移動平均（日）")
     parser.add_argument("--capital", type=float, default=3_000_000, help="ポートフォリオ検証の初期資金（円）")
@@ -141,6 +143,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_hold=args.max_hold,
         ma_exit=not args.no_ma_exit,
         ma_exit_atr=args.ma_exit_atr,
+        trend_ma_len=args.trend_ma,
     )
     data = load_prices(args.prices)
     market: Optional[MarketFilter] = None
@@ -174,7 +177,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"期間 {first} 〜 {last} / {len(data)} 銘柄 / {sides} / 地合いフィルター "
           f"{'あり（' + str(args.market_ma) + '日線）' if market else 'なし'}")
     print(f"損切り {p.stop_atr}ATR・トレール {p.trail_atr}ATR・利確 {p.tp_r}R×{p.tp_pct:.0f}%"
-          f"・最大 {p.max_hold}日・25日線割れの余裕 {p.ma_exit_atr if p.ma_exit else '—'}ATR")
+          f"・最大 {p.max_hold}日・25日線割れの余裕 {p.ma_exit_atr if p.ma_exit else '—'}ATR"
+          f"・長期トレンド {str(p.trend_ma_len) + '日線' if p.trend_ma_len else 'なし'}")
     print_summary("全体", summarize(trades))
     for setup, label in SETUP_LABELS.items():
         subset = [t for t in trades if t.setup == setup]

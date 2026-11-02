@@ -82,6 +82,13 @@ jobs:
           run_bt "25日線割れの余裕なし（--ma-exit-atr 0）" "${MARKET[@]}" --ma-exit-atr 0
           run_bt "売り（信用売り）のみ" "${MARKET[@]}" --no-long --short
 
+          # 長期トレンド（200日線）フィルターの比較。200日線がそろう時点から同じ期間で比べる
+          START=$(python -c "import csv, datetime; d = min(r['日付'] for r in csv.DictReader(open('data/history.csv', encoding='utf-8-sig'))); print(datetime.date.fromisoformat(d) + datetime.timedelta(days=300))")
+          echo "# 200日線フィルターの比較（${START} 以降）" >> "$GITHUB_STEP_SUMMARY"
+          run_bt "比較の基準: フィルターなし（${START} 以降）" --start "$START"
+          run_bt "200日線より上だけ（${START} 以降）" --trend-ma 200 --start "$START"
+          run_bt "200日線より上だけ＋地合いフィルター（${START} 以降）" "${MARKET[@]}" --trend-ma 200 --start "$START"
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4

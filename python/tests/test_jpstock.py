@@ -162,6 +162,27 @@ class RulesTest(unittest.TestCase):
         self.assertTrue(a["up_trend"][-1])
         self.assertEqual(a["setup"][-1], "PB", msg=f"rsi={a['rsi'][-1]} top={top}")
 
+    def test_trend_ma_filter(self):
+        rows = []
+        price = 1000.0
+        for _ in range(100):
+            price *= 1.004
+            rows.append((price * 0.995, price * 1.01, price * 0.99, price))
+        for _ in range(6):
+            price *= 0.985
+            rows.append((price * 1.005, price * 1.01, price * 0.99, price))
+        bars = _bars(rows)
+        ma_m = analyze(bars, SwingParams())["ma_m"][-1]
+        last_close = max(ma_m * 1.01, bars[-1].high * 1.002)
+        bars.append(Bar("2026-12-31", ma_m * 0.995, last_close * 1.001, ma_m * 0.99, last_close, 1500))
+        # 50日線より上 → シグナルはそのまま
+        self.assertEqual(analyze(bars, SwingParams(trend_ma_len=50))["setup"][-1], "PB")
+        # 200日分のデータがない → シグナルを出さない
+        self.assertIsNone(analyze(bars, SwingParams(trend_ma_len=200))["setup"][-1])
+        # 長期線より下（極端に長い線を高値圏に置いた想定）→ 買わない
+        high_bars = [Bar(b.date, b.open * 3, b.high * 3, b.low * 3, b.close * 3, b.volume) for b in bars[:20]] + bars[20:]
+        self.assertIsNone(analyze(high_bars, SwingParams(trend_ma_len=100))["setup"][-1])
+
     def test_score_bounds(self):
         hi = technical_score(close=110, ma_s=108, ma_m=105, ma_l=100, ma_m_prev=104,
                              rsi=60, vol_ratio=2.5, dev=5, hh=111)

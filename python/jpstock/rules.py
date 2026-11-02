@@ -76,6 +76,10 @@ class SwingParams:
     ma_exit: bool = True  # 終値で25日線を割ったら手仕舞い
     ma_exit_atr: float = 1.0  # 25日線割れの判定に持たせる余裕（ATR 倍）。押し目買い直後のダマシ対策
 
+    # 長期トレンドフィルター（0 で無効）。買いは終値 > n日線、売りは終値 < n日線の銘柄だけ。
+    # n日分のデータがそろうまではシグナルを出さない。
+    trend_ma_len: int = 0
+
 
 def _all(*values: object) -> bool:
     return all(v is not None for v in values)
@@ -93,6 +97,7 @@ def analyze(bars: Sequence[Bar], p: SwingParams = SwingParams()) -> Dict[str, Li
     ma_s = ta.sma(c, p.ma_short)
     ma_m = ta.sma(c, p.ma_mid)
     ma_l = ta.sma(c, p.ma_long)
+    ma_t = ta.sma(c, p.trend_ma_len) if p.trend_ma_len > 0 else [None] * n
     ma_m_prev = ta.shift(ma_m, p.slope_len)
     atr = ta.atr(h, lo, c, p.atr_len)
     rsi = ta.rsi(c, p.rsi_len)
@@ -112,7 +117,7 @@ def analyze(bars: Sequence[Bar], p: SwingParams = SwingParams()) -> Dict[str, Li
     }
     out.update(
         ma_s=ma_s, ma_m=ma_m, ma_l=ma_l, atr=atr, rsi=rsi,
-        hh_prev=hh_prev, ll_prev=ll_prev,
+        hh_prev=hh_prev, ll_prev=ll_prev, ma_t=ma_t,
     )
 
     for i in range(n):
@@ -173,6 +178,11 @@ def analyze(bars: Sequence[Bar], p: SwingParams = SwingParams()) -> Dict[str, Li
             and p.rsi_rs_min <= rsi[i] <= p.rsi_rs_max
         ):
             setup = SETUP_RALLY
+        if setup is not None and p.trend_ma_len > 0:
+            above = ma_t[i] is not None and c[i] > ma_t[i]
+            below = ma_t[i] is not None and c[i] < ma_t[i]
+            if (setup in LONG_SETUPS and not above) or (setup in SHORT_SETUPS and not below):
+                setup = None
         out["setup"][i] = setup
 
         out["score"][i] = technical_score(
