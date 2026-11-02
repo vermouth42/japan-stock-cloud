@@ -55,6 +55,33 @@ def print_summary(title: str, stats: Dict[str, float]) -> None:
     )
 
 
+def cagr_pct(ratio: float, years: float) -> float:
+    return (ratio ** (1.0 / years) - 1.0) * 100.0 if ratio > 0 and years > 0 else float("nan")
+
+
+def print_benchmark(data, index_bars, first: str, last: str, years: float) -> None:
+    """同じ期間、何もせずに持っていた場合（配当は含まない）。"""
+    print("■ 比較: 同じ期間ただ持っていた場合（配当なし）")
+    if index_bars:
+        start = next((b for b in index_bars if b.date >= first), None)
+        end = next((b for b in reversed(index_bars) if b.date <= last), None)
+        if start and end and start.close > 0:
+            ratio = end.close / start.close
+            print(f"  日経平均: {(ratio - 1) * 100:+.0f}%（年率 {cagr_pct(ratio, years):+.1f}%）")
+    ratios = []
+    for bars in data.values():
+        if bars and bars[0].date <= first and bars[-1].date >= last[:7] and bars[0].close > 0:
+            ratios.append(bars[-1].close / bars[0].close)
+    if ratios:
+        ratios.sort()
+        mean = sum(ratios) / len(ratios)
+        med = ratios[len(ratios) // 2]
+        print(
+            f"  対象銘柄の等金額保有（期間の最初からある {len(ratios)}銘柄）: {(mean - 1) * 100:+.0f}%"
+            f"（年率 {cagr_pct(mean, years):+.1f}%）・中央値の銘柄 {(med - 1) * 100:+.0f}%"
+        )
+
+
 def fmt_pf(pf: float) -> str:
     return "∞" if pf == float("inf") else f"{pf:.2f}"
 
@@ -117,11 +144,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     data = load_prices(args.prices)
     market: Optional[MarketFilter] = None
+    index_bars: List = []
     if args.market:
         index = load_prices(args.market)
         if not index:
             raise SystemExit(f"{args.market}: 指数のデータがありません")
-        market = MarketFilter(next(iter(index.values())), args.market_ma)
+        index_bars = next(iter(index.values()))
+        market = MarketFilter(index_bars, args.market_ma)
     trades: List[Trade] = []
     for code, bars in sorted(data.items()):
         trades.extend(
@@ -174,6 +203,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"（決済ベース） | 採用 {pr.taken} / 見送り {pr.skipped} | 同時保有 最大 {pr.max_concurrent}"
         )
         print_yearly(trades, pr.yearly_return_pct)
+        print_benchmark(data, index_bars, first, last, pr.years)
 
     if args.trades:
         write_trades(trades, args.trades)
