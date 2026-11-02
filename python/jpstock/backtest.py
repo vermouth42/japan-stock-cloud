@@ -6,15 +6,19 @@
 - 同じ日に損切りと利確の両方に届いた場合は、保守的に損切りが先とみなす。
 - 窓を空けて損切りラインを超えた場合は始値で約定する。
 - 25日線割れ・期間満了は終値で判定し、翌日始値で決済する。
-- 手数料 0（SBI・楽天など国内株の売買手数料無料プランを想定）。スリッページは ticks で指定。
+- 手数料 0（SBI・楽天など国内株の売買手数料無料プランを想定）。スリッページは価格（円）で指定。
+- 地合いフィルター（任意）: 指数の前日終値が移動平均より上なら買いのみ、下なら売りのみ。
 """
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
+from datetime import date as _date
 from statistics import median
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
+from . import indicators as ta
 from .rules import LONG_SETUPS, SHORT_SETUPS, Bar, SwingParams, analyze
 
 
@@ -35,6 +39,30 @@ class Trade:
     r_multiple: float = 0.0
     return_pct: float = 0.0
     open_at_end: bool = False
+    score: int = 0  # シグナル時点のテクニカルスコア（同じ日に複数シグナルがあるときの優先順位）
+
+
+@dataclass
+class MarketFilter:
+    """指数の「前日終値 > 移動平均」で地合いを判定する（TradingView 版の地合いフィルターと同じ）。
+
+    シグナル日より前の最後の指数の足で判定する。指数のデータが無い・移動平均が計算できない日は通す。
+    """
+
+    def __init__(self, index_bars: Sequence[Bar], ma_len: int = 75) -> None:
+        closes = [b.close for b in index_bars]
+        ma = ta.sma(closes, ma_len)
+        self._dates = [b.date for b in index_bars]
+        self._state: List[Optional[Tuple[bool, bool]]] = [
+            None if m is None else (c > m, c < m) for c, m in zip(closes, ma)
+        ]
+
+    def allows(self, date: str, side: int) -> bool:
+        k = bisect_left(self._dates, date) - 1
+        if k < 0 or self._state[k] is None:
+            return True
+        up, down = self._state[k]  # type: ignore[misc]
+        return up if side > 0 else down
 
 
 @dataclass
@@ -77,11 +105,12 @@ def backtest_swing(
     allow_long: bool = True,
     allow_short: bool = False,
     slippage: float = 0.0,
+    market: Optional[MarketFilter] = None,
     analysis: Optional[Dict[str, List]] = None,
 ) -> List[Trade]:
     """1銘柄分のトレード一覧を返す。slippage は価格単位（例: 1円）。
 
-    analysis を渡すと analyze() の代わりにそれを使う（テスト用）。
+    market を渡すと地合いフィルターをかける。analysis を渡すと analyze() の代わりにそれを使う（テスト用）。
     """
     a = analysis if analysis is not None else analyze(bars, p)
     atr = a["atr"]
@@ -110,6 +139,7 @@ def backtest_swing(
                 entry_price=entry,
                 init_stop=pending["stop"],
                 risk=pending["risk"],
+                score=pending["score"],
             )
             pos = _Position(
                 trade=trade, side=side, stop=pending["stop"], tp=pending["tp"],
@@ -166,6 +196,8 @@ def backtest_swing(
                 side = 1
             elif allow_short and setup in SHORT_SETUPS:
                 side = -1
+            if side != 0 and market is not None and not market.allows(b.date, side):
+                side = 0
             if side != 0:
                 risk = p.stop_atr * atr[i]
                 pending = {
@@ -175,6 +207,7 @@ def backtest_swing(
                     "stop": b.close - side * risk,
                     "tp": b.close + side * p.tp_r * risk,
                     "risk": risk,
+                    "score": (a.get("score") or [None] * len(bars))[i] or 0,
                 }
 
     # 期末に残ったポジションは最終終値で評価
@@ -222,3 +255,96 @@ def summarize(trades: Sequence[Trade]) -> Dict[str, float]:
         "avg_bars": sum(t.bars_held for t in trades) / n,
         "avg_return_pct": sum(t.return_pct for t in trades) / n,
     }
+
+
+def yearly(trades: Sequence[Trade]) -> Dict[str, Dict[str, float]]:
+    """エントリー年ごとの集計。"""
+    by_year: Dict[str, List[Trade]] = {}
+    for t in trades:
+        by_year.setdefault(t.entry_date[:4], []).append(t)
+    return {y: summarize(ts) for y, ts in sorted(by_year.items())}
+
+
+@dataclass
+class PortfolioResult:
+    initial: float
+    final: float
+    cagr_pct: float
+    max_dd_pct: float
+    taken: int
+    skipped: int
+    years: float
+    yearly_return_pct: Dict[str, float]
+    max_concurrent: int
+
+
+def _years_between(start: str, end: str) -> float:
+    d0 = _date.fromisoformat(start)
+    d1 = _date.fromisoformat(end)
+    return max((d1 - d0).days / 365.25, 1e-9)
+
+
+def simulate_portfolio(
+    trades: Sequence[Trade],
+    *,
+    start: str,
+    end: str,
+    initial: float = 3_000_000.0,
+    risk_pct: float = 1.0,
+    max_positions: int = 5,
+) -> PortfolioResult:
+    """資金を共有したときの成績。
+
+    - 同時に持てるのは max_positions 銘柄まで。枠が空いていないシグナルは見送る。
+    - 同じ日に複数のシグナルがあれば、テクニカルスコアの高い順に入る。
+    - 1トレードの損失は「エントリー時点の資金 × risk_pct%」（= 1R）。損益は R × その金額。
+    - 決済した日に資金に反映する（含み損益は資産曲線に入れないので、最大DDは実際より小さめに出る）。
+    - 単元株の端数や、1銘柄の投資額の上限は考えない（資金に対して株価が高い銘柄も買える前提）。
+    """
+    candidates = sorted(trades, key=lambda t: (t.entry_date, -t.score, t.code))
+    equity = initial
+    open_: List[Tuple[str, Trade, float]] = []  # (決済日, トレード, 1R の金額)
+    curve: List[Tuple[str, float]] = [(start, initial)]
+    taken = skipped = max_concurrent = 0
+
+    def realize_until(day: Optional[str]) -> None:
+        nonlocal equity
+        open_.sort(key=lambda x: x[0])
+        while open_ and (day is None or open_[0][0] < day):
+            exit_date, t, risk_amount = open_.pop(0)
+            equity += risk_amount * t.r_multiple
+            curve.append((exit_date, equity))
+
+    for t in candidates:
+        realize_until(t.entry_date)
+        if len(open_) >= max_positions:
+            skipped += 1
+            continue
+        open_.append((t.exit_date, t, equity * risk_pct / 100.0))
+        taken += 1
+        max_concurrent = max(max_concurrent, len(open_))
+    realize_until(None)
+
+    peak = initial
+    max_dd = 0.0
+    for _, eq in curve:
+        peak = max(peak, eq)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - eq) / peak * 100.0)
+
+    year_end: Dict[str, float] = {}
+    for day, eq in curve:
+        year_end[day[:4]] = eq
+    yearly_ret: Dict[str, float] = {}
+    prev = initial
+    for y in sorted(year_end):
+        yearly_ret[y] = (year_end[y] / prev - 1.0) * 100.0 if prev > 0 else 0.0
+        prev = year_end[y]
+
+    years = _years_between(start, end)
+    cagr = ((equity / initial) ** (1.0 / years) - 1.0) * 100.0 if equity > 0 else -100.0
+    return PortfolioResult(
+        initial=initial, final=equity, cagr_pct=cagr, max_dd_pct=max_dd,
+        taken=taken, skipped=skipped, years=years, yearly_return_pct=yearly_ret,
+        max_concurrent=max_concurrent,
+    )

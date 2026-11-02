@@ -9,7 +9,9 @@
 | `tradingview/JP_SwingDay_Strategy.pine` | TradingView ストラテジー（EA）。バックテスト・Webhook 発注アラート |
 | `mt5/JP_SwingDay.mq5` | MT5 インジケーター（東証銘柄のCFDなど） |
 | `python/screen.py` | 毎日の終値でシグナル・スコア一覧を作る → `signals.csv` / `signals.md` |
-| `python/backtest.py` | スイング戦略を全銘柄でバックテスト |
+| `python/backtest.py` | スイング戦略を全銘柄でバックテスト（トレード統計・年別・ポートフォリオ） |
+| `python/fetch_history.py` | 10年分などの長期の日足と日経平均を取得（バックテスト用） |
+| `.github/workflows/backtest.yml` | 10年バックテストを GitHub Actions で実行 |
 | `docs/strategy_spec.md` | **ルールの仕様**（3つの実装で共通） |
 | `prices.csv` / `latest.csv` / `status.json` | 平日の夜に Actions が更新する株価データ（cron は 20:30 JST） |
 
@@ -85,11 +87,27 @@ python -m unittest discover -s python/tests
 GitHub Actions は株価の更新のあとに `screen.py` を実行し、`signals.csv` と `signals.md` も保存する。
 Actions の実行結果のページ（Summary）にも同じ表が出る。スクリーニングが失敗しても、株価の保存は止まらない。
 
+### 10年バックテスト
+
+`prices.csv` は約240日分しかないので、長期の検証には別にデータを取る。
+
+- **GitHub Actions（おすすめ）**: Actions タブ →「Backtest (long history)」→「Run workflow」で年数（5〜20年）を選んで実行。
+  結果は実行ページの Summary に出て、トレード一覧と株価データは Artifacts からダウンロードできる。
+  `python/` 以下を変える Pull Request でも自動で実行される。
+- **手元の PC**:
+  ```bash
+  python python/fetch_history.py --years 10     # data/history.csv（100銘柄）と data/market.csv（日経平均）
+  python python/backtest.py --prices data/history.csv --market data/market.csv
+  ```
+
+出力はトレード統計（R倍数）・セットアップ別・年別に加えて、資金を共有したときの成績
+（初期300万円、1トレード1%リスク、同時に5銘柄まで。`--capital` `--risk-pct` `--max-positions` で変更）。
+
 ## 検証結果の要約
 
 `prices.csv` の100銘柄（2026-03〜2026-10、実質4か月）で、買いのみ・既定パラメーター:
 152回、勝率31.6%、平均 +0.08R、PF 1.18（決済済みのみだと PF 1.05）。
-**期間が短く、まだ優位性があるとは言えない。** 実際のお金で使う前に、TradingView のストラテジーテスターで長期間を確認すること。
+**期間が短く、まだ優位性があるとは言えない。** 上の「10年バックテスト」で確認すること。
 
 ---
 

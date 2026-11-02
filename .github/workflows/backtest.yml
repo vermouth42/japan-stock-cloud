@@ -1,0 +1,95 @@
+name: Backtest (long history)
+
+# 10年分などの長期間で、スイング戦略をバックテストする。
+# - 手動: Actions タブ →「Backtest (long history)」→「Run workflow」
+# - 自動: 売買ルール（python/ 以下）を変える Pull Request で実行
+# 結果は実行結果ページの Summary と、Artifacts（トレード一覧・株価データ）に出る。
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "検証年数"
+        default: "10"
+        type: choice
+        options: ["5", "10", "15", "20"]
+      max_positions:
+        description: "ポートフォリオ検証の最大同時保有銘柄数"
+        default: "5"
+        type: string
+  pull_request:
+    paths:
+      - "python/**"
+      - ".github/workflows/backtest.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backtest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      YEARS: ${{ inputs.years || '10' }}
+      MAX_POSITIONS: ${{ inputs.max_positions || '5' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: python -m unittest discover -s python/tests
+
+      - name: Download price history
+        run: python python/fetch_history.py --years "$YEARS"
+
+      - name: Backtest
+        shell: bash
+        run: |
+          set -o pipefail
+          run_bt() {
+            local title="$1"; shift
+            echo "::group::$title"
+            {
+              echo "## $title"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            python python/backtest.py --prices data/history.csv --max-positions "$MAX_POSITIONS" "$@" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "::endgroup::"
+          }
+
+          echo "# スイング戦略 ${YEARS}年バックテスト" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f data/market.csv ]; then
+            MARKET=(--market data/market.csv)
+          else
+            MARKET=()
+            echo "日経平均を取得できなかったため、地合いフィルターなしで検証" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          run_bt "既定（買いのみ・地合いフィルターあり）= TradingView 版の既定に近い" "${MARKET[@]}" --trades data/trades.csv
+          run_bt "地合いフィルターなし"
+          run_bt "25日線割れの余裕なし（--ma-exit-atr 0）" "${MARKET[@]}" --ma-exit-atr 0
+          run_bt "売り（信用売り）のみ" "${MARKET[@]}" --no-long --short
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ env.YEARS }}y
+          path: |
+            data/trades.csv
+            data/history.csv
+            data/market.csv
+          if-no-files-found: ignore
+          retention-days: 30
