@@ -15,7 +15,7 @@
 | `docs/strategy_spec.md` | **ルールの仕様**（3つの実装で共通） |
 | `prices.csv` / `latest.csv` / `status.json` | 平日の夜に Actions が更新する株価データ（cron は 20:30 JST） |
 
-ルールの考え方: **上昇トレンドの銘柄だけを、出来高を伴う高値更新（BO）か、25日線までの押しからの反転（PB）で買う。
+ルールの考え方: **200日線より上の上昇トレンドの銘柄だけを、出来高を伴う高値更新（BO）か、25日線までの押しからの反転（PB）で買う。
 損切りは ATR で決め、1トレードの損失を資金の1%に抑える。** 詳細は [docs/strategy_spec.md](docs/strategy_spec.md)。
 
 ---
@@ -98,6 +98,8 @@ Actions の実行結果のページ（Summary）にも同じ表が出る。ス�
   ```bash
   python python/fetch_history.py --years 10     # data/history.csv（100銘柄）と data/market.csv（日経平均）
   python python/backtest.py --prices data/history.csv --market data/market.csv
+  python python/backtest.py --prices data/history.csv --market data/market.csv --trend-ma 0     # 200日線フィルターなし
+  python python/backtest.py --prices data/history.csv --market data/market.csv --market-filter  # 地合いフィルターあり
   ```
 
 出力はトレード統計（R倍数）・セットアップ別・年別に加えて、資金を共有したときの成績
@@ -105,9 +107,10 @@ Actions の実行結果のページ（Summary）にも同じ表が出る。ス�
 
 ## 検証結果の要約
 
-`prices.csv` の100銘柄（2026-03〜2026-10、実質4か月）で、買いのみ・既定パラメーター:
-152回、勝率31.6%、平均 +0.08R、PF 1.18（決済済みのみだと PF 1.05）。
-**期間が短く、まだ優位性があるとは言えない。** 上の「10年バックテスト」で確認すること。
+100銘柄の10年分（2017-08〜2026-10、買いのみ、既定の200日線フィルターあり）:
+2,589回、勝率36.4%、平均 +0.14R、PF 1.28。200日線フィルターなし（平均 +0.09R、PF 1.17）より、10年中8年で良かった。
+ただし資金を使った年率は +8.0%（最大DD 33.9%）で、**日経平均をただ持つ（年率13.7%）、同じ銘柄をただ持つ（年率25.5%）には大きく負ける。**
+2018年・2022年の負けも残る。詳細と読み方は [仕様書の10・11章](docs/strategy_spec.md#10-検証結果10年2026-11-02-時点)。
 
 ---
 

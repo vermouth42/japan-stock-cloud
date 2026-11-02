@@ -28,7 +28,7 @@ from jpstock.rules import (  # noqa: E402
 HEADER = [
     "日付", "コード", "終値", "シグナル", "スコア", "トレンド",
     "RSI14", "ATR14", "ATR%", "出来高倍率", "25日線乖離%",
-    "5日線", "25日線", "75日線", "20日高値", "20日安値",
+    "5日線", "25日線", "75日線", "200日線", "20日高値", "20日安値",
     "損切り目安", "利確目安(2R)", "100株リスク(円)", "注意",
 ]
 
@@ -76,6 +76,12 @@ def build_rows(prices_path: str, p: SwingParams) -> List[Dict[str, object]]:
             notes.insert(0, "25日線割れ")
         if b.date < latest_date:
             notes.insert(0, f"データ更新なし({b.date})")
+        ma_t = a["ma_t"][i]
+        if p.trend_ma_len > 0:
+            if ma_t is None:
+                notes.append(f"{p.trend_ma_len}日線データ不足")
+            elif b.close < ma_t:
+                notes.append(f"{p.trend_ma_len}日線の下")
 
         stop = tp = risk100 = None
         if setup is not None and atr is not None:
@@ -101,6 +107,7 @@ def build_rows(prices_path: str, p: SwingParams) -> List[Dict[str, object]]:
             "5日線": a["ma_s"][i],
             "25日線": a["ma_m"][i],
             "75日線": a["ma_l"][i],
+            "200日線": ma_t,
             "20日高値": a["hh_prev"][i],
             "20日安値": a["ll_prev"][i],
             "損切り目安": stop,
@@ -121,7 +128,7 @@ def build_rows(prices_path: str, p: SwingParams) -> List[Dict[str, object]]:
 def write_csv(rows: List[Dict[str, object]], path: str) -> None:
     digits = {
         "終値": 1, "RSI14": 1, "ATR14": 1, "ATR%": 2, "出来高倍率": 2, "25日線乖離%": 2,
-        "5日線": 1, "25日線": 1, "75日線": 1, "20日高値": 1, "20日安値": 1,
+        "5日線": 1, "25日線": 1, "75日線": 1, "200日線": 1, "20日高値": 1, "20日安値": 1,
         "損切り目安": 1, "利確目安(2R)": 1, "100株リスク(円)": 0,
     }
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -189,7 +196,7 @@ def build_markdown(rows: List[Dict[str, object]]) -> str:
 
     lines.append("---")
     lines.append(
-        "ルールは docs/strategy_spec.md。損切り目安 = 終値 − 2×ATR14、利確目安 = 2R。"
+        "ルールは docs/strategy_spec.md。買いシグナルは200日線より上の銘柄だけ。損切り目安 = 終値 − 2×ATR14、利確目安 = 2R。"
         "ファンダメンタルズ（決算・財務）は TradingView 版で確認してください。投資判断はご自身で。"
     )
     return "\n".join(lines) + "\n"

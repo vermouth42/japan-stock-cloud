@@ -77,6 +77,7 @@ input int    InpSlopeLen = 5;  // 中期MAの傾き判定（n本前と比較）
 input int    InpAtrLen   = 14; // ATR期間
 input int    InpRsiLen   = 14; // RSI期間
 input int    InpVolLen   = 25; // 出来高倍率の分母（平均出来高の期間）
+input int    InpTrendMa  = 200; // 長期トレンド: 終値がn本MAより上だけ買い・下だけ売り（0で無効）
 
 input group "スイング（日足）シグナル"
 input int    InpBoLen       = 20;  // ブレイクアウト: 高値更新の期間
@@ -455,6 +456,16 @@ int OnCalculate(const int rates_total,
                   else
                      if(rs && InpShowShort)
                         setup = 4;
+
+            //--- 長期トレンドフィルター（既定 200本）。n本分のデータがそろうまではシグナルを出さない
+            if(setup > 0 && InpTrendMa > 0)
+              {
+               double maT = SmaArr(close, i, InpTrendMa);
+               bool longSide = (setup == 1 || setup == 2);
+               bool ok = longSide ? (Ok(maT) && close[i] > maT) : (Ok(maT) && close[i] < maT);
+               if(!ok)
+                  setup = 0;
+              }
            }
         }
 
@@ -554,6 +565,12 @@ int OnCalculate(const int rates_total,
       string s = g_isDay ? "JP-SD デイ" : "JP-SD スイング";
       s += "  " + _Symbol + "\n";
       s += "トレンド: " + trend + "\n";
+      if(InpTrendMa > 0)
+        {
+         double maT = SmaArr(close, i, InpTrendMa);
+         s += "長期トレンド（" + IntegerToString(InpTrendMa) + "本MA）: " +
+              (!Ok(maT) ? "データ不足" : (close[i] > maT ? "上（買い対象）" : "下（買わない）")) + "\n";
+        }
       s += "RSI" + IntegerToString(InpRsiLen) + ": " + (Ok(BufRsi[i]) ? DoubleToString(BufRsi[i], 1) : "—");
       s += "   ATR%: " + (Ok(BufAtr[i]) && close[i] > 0 ? DoubleToString(BufAtr[i] / close[i] * 100.0, 2) + "%" : "—") + "\n";
       s += "出来高倍率: " + (Ok(volRatio) ? DoubleToString(volRatio, 2) : "—");

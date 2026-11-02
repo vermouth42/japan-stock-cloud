@@ -54,7 +54,8 @@ jobs:
 
           JST = timezone(timedelta(hours=9))
 
-          LOOKBACK_DAYS = 240
+          # 200日線の計算に約290営業日分を残す（200本 + 余裕）
+          LOOKBACK_DAYS = 420
 
 
           CODES = [

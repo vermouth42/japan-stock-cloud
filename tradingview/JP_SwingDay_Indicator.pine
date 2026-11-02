@@ -31,6 +31,8 @@ slopeLen = input.int(5,  "中期MAの傾き判定（n本前と比較）", minval
 atrLen   = input.int(14, "ATR期間", minval = 1, group = G_MA)
 rsiLen   = input.int(14, "RSI期間", minval = 2, group = G_MA)
 volLen   = input.int(25, "出来高倍率の分母（平均出来高の期間）", minval = 1, group = G_MA)
+trendMaLen = input.int(200, "長期トレンド: 終値がn本MAより上の銘柄だけ買い（下だけ売り）", minval = 0, group = G_MA,
+              tooltip = "日足なら200日線。0で無効。n本分のデータがそろうまではスイングのシグナルを出さない（10年の検証で1トレードの質が改善）")
 
 boLen       = input.int(20, "ブレイクアウト: 高値更新の期間", minval = 2, group = G_SW)
 volRatioMin = input.float(1.5, "ブレイクアウト: 出来高倍率 以上", step = 0.1, group = G_SW)
@@ -171,6 +173,15 @@ bdSig = ready and not boSig and not pbSig and not na(llPrev) and not na(volRatio
 rsSig = ready and not boSig and not pbSig and not bdSig and downTrend and highPb >= maM - pbAtr * atr and
      close < maM and close < low[1] and close < open and rsi >= rsiRsMin and rsi <= rsiRsMax
 
+// 長期トレンドフィルター（既定 200本）。n本分のデータがそろうまではシグナルを出さない
+maT       = ta.sma(close, math.max(trendMaLen, 1))
+trendUpOk = trendMaLen == 0 or (not na(maT) and close > maT)
+trendDnOk = trendMaLen == 0 or (not na(maT) and close < maT)
+boOk = boSig and trendUpOk
+pbOk = pbSig and trendUpOk
+bdOk = bdSig and trendDnOk
+rsOk = rsSig and trendDnOk
+
 swLongOk  = (not useMktSg or mktUp) and (not useFundSg or fundOk)
 swShortOk = showShort and (not useMktSg or mktDown)
 
@@ -216,16 +227,16 @@ dayShortOk = showShort and (not useMktSg or mktDown)
 string sigName = ""
 int    sigSide = 0
 if not isDay
-    if boSig and swLongOk
+    if boOk and swLongOk
         sigName := "BO"
         sigSide := 1
-    else if pbSig and swLongOk
+    else if pbOk and swLongOk
         sigName := "PB"
         sigSide := 1
-    else if bdSig and swShortOk
+    else if bdOk and swShortOk
         sigName := "BD"
         sigSide := -1
-    else if rsSig and swShortOk
+    else if rsOk and swShortOk
         sigName := "RS"
         sigSide := -1
 else
@@ -250,6 +261,7 @@ sigTP   = close + sigSide * (isDay ? dayTpR : tpR) * sigRisk
 plot(showMA ? maS : na, "MA短", color.new(#f5a623, 0), 1)
 pM = plot(showMA ? maM : na, "MA中", color.new(#e0457b, 0), 2)
 pL = plot(showMA ? maL : na, "MA長", color.new(#3d7fe0, 0), 2)
+plot(showMA and trendMaLen > 0 ? maT : na, "長期トレンドMA", color.new(color.gray, 20), 2)
 cloudCol = upTrend ? color.new(color.teal, 85) : downTrend ? color.new(color.red, 85) : color.new(color.gray, 92)
 fill(pM, pL, color = showCloud ? cloudCol : na, title = "トレンド帯")
 
@@ -337,6 +349,9 @@ if showTable and barstate.islast
     row(r, "出来高倍率", fmt(volRatio, "0.00"), volRatio >= 1.5 ? okCol(true) : neutral)
     r += 1
     row(r, "中期MA乖離", fmt(dev, "0.0") + "%", math.abs(nz(dev)) >= 15 ? color.orange : neutral)
+    r += 1
+    row(r, "長期トレンド（" + str.tostring(trendMaLen) + "本MA）", trendMaLen == 0 ? "無効" : na(maT) ? "データ不足" : close > maT ? "上（買い対象）" : "下（買わない）",
+         trendMaLen == 0 or na(maT) ? neutral : okCol(close > maT))
     r += 1
     row(r, "地合い（指数>" + str.tostring(mktLen) + "MA）", na(mktMa) ? "—" : mktUp ? "良好" : "悪化", na(mktMa) ? neutral : okCol(mktUp))
     r += 1

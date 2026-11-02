@@ -9,6 +9,7 @@
 長期間（10年など）で検証するとき:
     python python/fetch_history.py --years 10          # data/history.csv と data/market.csv を作る
     python python/backtest.py --prices data/history.csv --market data/market.csv
+    （--market は日経平均との比較用。地合いフィルターもかけるなら --market-filter を付ける）
 
 注意: prices.csv は約240日分しかないため（75日線の計算に75本使う）、そのままでは検証期間が短い。
 GitHub Actions の「Backtest」ワークフローでも10年分の検証ができる。
@@ -126,7 +127,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--trades", default="", help="全トレードの出力先 CSV")
     parser.add_argument("--trend-ma", type=int, default=defaults.trend_ma_len,
                         help="長期トレンドフィルター: 終値がこの日数の移動平均より上の銘柄だけ買う（0で無効）")
-    parser.add_argument("--market", default="", help="地合いフィルターに使う指数の CSV（fetch_history.py が作る）")
+    parser.add_argument("--market", default="", help="日経平均の CSV（fetch_history.py が作る）。成績の比較に使う")
+    parser.add_argument("--market-filter", action="store_true",
+                        help="地合いフィルター（指数の前日終値 > 移動平均のときだけ買う）。--market が必要")
     parser.add_argument("--market-ma", type=int, default=75, help="指数の移動平均（日）")
     parser.add_argument("--capital", type=float, default=3_000_000, help="ポートフォリオ検証の初期資金（円）")
     parser.add_argument("--risk-pct", type=float, default=1.0, help="1トレードの許容損失（資金の%%）")
@@ -148,12 +151,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     data = load_prices(args.prices)
     market: Optional[MarketFilter] = None
     index_bars: List = []
+    if args.market_filter and not args.market:
+        parser.error("--market-filter には --market が必要です")
     if args.market:
         index = load_prices(args.market)
         if not index:
             raise SystemExit(f"{args.market}: 指数のデータがありません")
         index_bars = next(iter(index.values()))
-        market = MarketFilter(index_bars, args.market_ma)
+        if args.market_filter:
+            market = MarketFilter(index_bars, args.market_ma)
     trades: List[Trade] = []
     for code, bars in sorted(data.items()):
         trades.extend(

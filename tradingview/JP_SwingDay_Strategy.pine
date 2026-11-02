@@ -56,6 +56,8 @@ slopeLen = input.int(5,  "中期MAの傾き判定（n本前と比較）", minval
 atrLen   = input.int(14, "ATR期間", minval = 1, group = G_MA)
 rsiLen   = input.int(14, "RSI期間", minval = 2, group = G_MA)
 volLen   = input.int(25, "出来高倍率の分母（平均出来高の期間）", minval = 1, group = G_MA)
+trendMaLen = input.int(200, "長期トレンド: 終値がn本MAより上の銘柄だけ買い（下だけ売り）", minval = 0, group = G_MA,
+              tooltip = "日足なら200日線。0で無効。n本分のデータがそろうまではスイングのシグナルを出さない（10年の検証で1トレードの質が改善）")
 
 boLen       = input.int(20, "ブレイクアウト: 高値更新の期間", minval = 2, group = G_SW)
 volRatioMin = input.float(1.5, "ブレイクアウト: 出来高倍率 以上", step = 0.1, group = G_SW)
@@ -80,7 +82,8 @@ useMaExit = input.bool(true, "終値で中期MAを割ったら手仕舞い", gro
 maExitAtr = input.float(1.0, "中期MA割れの余裕（n×ATR）", step = 0.1, group = G_SWX,
              tooltip = "押し目買いは中期MAの近くで入るため、余裕なしだとダマシで振り落とされやすい")
 
-useMktSw   = input.bool(true, "地合いフィルター（指数が移動平均の上なら買い、下なら売り）", group = G_SWF)
+useMktSw   = input.bool(false, "地合いフィルター（指数が移動平均の上なら買い、下なら売り）", group = G_SWF,
+              tooltip = "10年の検証では効果がなかったため既定はOFF")
 mktSym     = input.symbol("TVC:NI225", "地合いの指数", group = G_SWF, tooltip = "日経平均。TOPIXなら TSE:1306、グロースなら TSE:2516 など")
 mktLen     = input.int(75, "指数の移動平均（日）", minval = 1, group = G_SWF)
 useFundSw  = input.bool(true, "ファンダ合格銘柄だけ買う", group = G_SWF)
@@ -149,6 +152,15 @@ bdSig = ready and not boSig and not pbSig and not na(llPrev) and not na(volRatio
      rsi >= rsiBdMin and dev >= -devMax
 rsSig = ready and not boSig and not pbSig and not bdSig and downTrend and highPb >= maM - pbAtr * atr and
      close < maM and close < low[1] and close < open and rsi >= rsiRsMin and rsi <= rsiRsMax
+
+// 長期トレンドフィルター（既定 200本）。n本分のデータがそろうまではシグナルを出さない
+maT       = ta.sma(close, math.max(trendMaLen, 1))
+trendUpOk = trendMaLen == 0 or (not na(maT) and close > maT)
+trendDnOk = trendMaLen == 0 or (not na(maT) and close < maT)
+boOk = boSig and trendUpOk
+pbOk = pbSig and trendUpOk
+bdOk = bdSig and trendDnOk
+rsOk = rsSig and trendDnOk
 
 // ───────────── 地合い ─────────────
 [mktC, mktMa] = request.security(mktSym, "1D", [close[1], ta.sma(close, mktLen)[1]], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
@@ -339,8 +351,8 @@ if isDay
     lSetup := useORB and orbL ? "ORB" : useVWB and vwbL ? "VWAP" : ""
     sSetup := useORB and orbS ? "ORB" : useVWB and vwbS ? "VWAP" : ""
 else
-    lSetup := useBO and boSig ? "BO" : usePB and pbSig ? "PB" : ""
-    sSetup := useBD and bdSig ? "BD" : useRS and rsSig ? "RS" : ""
+    lSetup := useBO and boOk ? "BO" : usePB and pbOk ? "PB" : ""
+    sSetup := useBD and bdOk ? "BD" : useRS and rsOk ? "RS" : ""
 
 longFilter  = isDay ? (not useMktDay or mktUp) : ((not useMktSw or mktUp) and (not useFundSw or fundOk) and not earnBlock)
 shortFilter = isDay ? (not useMktDay or mktDown) : ((not useMktSw or mktDown) and not earnBlock)
@@ -378,6 +390,7 @@ if inRange and posSize == 0 and dayOk
 // ───────────── 描画 ─────────────
 plot(maM, "MA中", color.new(#e0457b, 40), 1)
 plot(maL, "MA長", color.new(#3d7fe0, 40), 1)
+plot(trendMaLen > 0 ? maT : na, "長期トレンドMA", color.new(color.gray, 30), 1)
 plot(isDay ? vwapV : na, "VWAP", color.new(#9b59b6, 20), 1, plot.style_linebr)
 plot(isDay and orReady ? orH : na, "OR高値", color.new(color.green, 40), 1, plot.style_linebr)
 plot(isDay and orReady ? orL : na, "OR安値", color.new(color.red, 40), 1, plot.style_linebr)

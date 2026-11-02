@@ -158,7 +158,7 @@ class RulesTest(unittest.TestCase):
         # 25日線の少し上で反発する陽線
         last_close = max(ma_m * 1.01, bars[-1].high * 1.002)
         bars.append(Bar("2026-12-31", ma_m * 0.995, last_close * 1.001, ma_m * 0.99, last_close, 1500))
-        a = analyze(bars, SwingParams())
+        a = analyze(bars, SwingParams(trend_ma_len=0))
         self.assertTrue(a["up_trend"][-1])
         self.assertEqual(a["setup"][-1], "PB", msg=f"rsi={a['rsi'][-1]} top={top}")
 

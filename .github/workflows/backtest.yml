@@ -74,20 +74,22 @@ jobs:
             MARKET=(--market data/market.csv)
           else
             MARKET=()
-            echo "日経平均を取得できなかったため、地合いフィルターなしで検証" >> "$GITHUB_STEP_SUMMARY"
+            echo "日経平均を取得できなかったため、地合いフィルターの検証と日経平均との比較は省略" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          run_bt "既定（買いのみ・地合いフィルターあり）= TradingView 版の既定に近い" "${MARKET[@]}" --trades data/trades.csv
-          run_bt "地合いフィルターなし"
+          run_bt "既定（買いのみ・200日線フィルター）= TradingView 版の既定" "${MARKET[@]}" --trades data/trades.csv
+          run_bt "200日線フィルターなし" "${MARKET[@]}" --trend-ma 0
           run_bt "25日線割れの余裕なし（--ma-exit-atr 0）" "${MARKET[@]}" --ma-exit-atr 0
           run_bt "売り（信用売り）のみ" "${MARKET[@]}" --no-long --short
+          if [ -f data/market.csv ]; then
+            run_bt "地合いフィルターを追加（--market-filter）" "${MARKET[@]}" --market-filter
+          fi
 
-          # 長期トレンド（200日線）フィルターの比較。200日線がそろう時点から同じ期間で比べる
+          # 200日線フィルターの有無を、200日線がそろう時点から同じ期間で比べる
           START=$(python -c "import csv, datetime; d = min(r['日付'] for r in csv.DictReader(open('data/history.csv', encoding='utf-8-sig'))); print(datetime.date.fromisoformat(d) + datetime.timedelta(days=300))")
           echo "# 200日線フィルターの比較（${START} 以降）" >> "$GITHUB_STEP_SUMMARY"
-          run_bt "比較の基準: フィルターなし（${START} 以降）" --start "$START"
-          run_bt "200日線より上だけ（${START} 以降）" --trend-ma 200 --start "$START"
-          run_bt "200日線より上だけ＋地合いフィルター（${START} 以降）" "${MARKET[@]}" --trend-ma 200 --start "$START"
+          run_bt "200日線フィルターなし（${START} 以降）" "${MARKET[@]}" --trend-ma 0 --start "$START"
+          run_bt "既定: 200日線フィルター（${START} 以降）" "${MARKET[@]}" --start "$START"
 
       - name: Upload results
         if: always()
