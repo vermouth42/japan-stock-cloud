@@ -1,9 +1,9 @@
 {
-  "updated_at_jst": "2026-10-31T02:07:18+09:00",
-  "latest_market_date": "2026-10-29",
+  "updated_at_jst": "2026-11-03T05:52:15+09:00",
+  "latest_market_date": "2026-10-30",
   "stocks_total": 100,
   "stocks_success": 100,
   "stocks_failed": 0,
-  "rows": 15907,
+  "rows": 15809,
   "failed": []
 }
