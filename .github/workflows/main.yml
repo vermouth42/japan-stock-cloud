@@ -829,6 +829,14 @@ jobs:
           )
 
           PYTHON
+      - name: Screen signals (indicators)
+        # 失敗しても株価の保存は続ける
+        continue-on-error: true
+        shell: bash
+        run: |
+
+          python python/screen.py --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Save prices to GitHub
         shell: bash
         run: |
@@ -846,6 +854,9 @@ jobs:
             prices.csv \
             latest.csv \
             status.json
+
+          # スクリーニング結果（作れなかった日は無視）
+          git add signals.csv signals.md 2>/dev/null || true
 
 
           if git diff --cached --quiet
