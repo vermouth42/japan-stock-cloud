@@ -1,0 +1,388 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//
+// JP Swing/Day Indicator — 日本株（東証）デイトレ・スイング用インジケーター
+//
+//  日足以上   : 5/25/75日線・トレンド帯・スイングシグナル（BO/PB/BD/RS）・損切り/利確の目安
+//  分足       : VWAP±σ・オープニングレンジ（OR）・前日高安終値・デイシグナル（ORB/VWAP反発）
+//  共通       : ファンダメンタルズ表（PER・PBR・ROE・営業利益率・自己資本比率・成長率・FCF・次回決算）
+//
+//  ルールの詳細は docs/strategy_spec.md。ストラテジー版（EA）は JP_SwingDay_Strategy.pine。
+//  シグナルは足の確定で判定する（確定前の足ではシグナルが出たり消えたりする）。
+//@version=6
+indicator("JP Swing/Day Indicator", shorttitle = "JP-SD", overlay = true, max_labels_count = 100, max_lines_count = 50)
+
+// ───────────── 入力 ─────────────
+const string G_MODE = "モード"
+const string G_MA   = "移動平均・トレンド"
+const string G_SW   = "スイング（日足）シグナル"
+const string G_DAY  = "デイトレ（分足）"
+const string G_MKT  = "地合いフィルター"
+const string G_FUND = "ファンダメンタルズ"
+const string G_VIEW = "表示"
+
+modeIn    = input.string("自動", "モード", options = ["自動", "スイング", "デイ"], group = G_MODE,
+             tooltip = "自動: 分足ならデイ、日足以上ならスイング")
+showShort = input.bool(true, "売りシグナル（信用売り）も表示", group = G_MODE)
+
+maSLen   = input.int(5,  "短期MA", minval = 1, group = G_MA)
+maMLen   = input.int(25, "中期MA", minval = 1, group = G_MA)
+maLLen   = input.int(75, "長期MA", minval = 1, group = G_MA)
+slopeLen = input.int(5,  "中期MAの傾き判定（n本前と比較）", minval = 1, group = G_MA)
+atrLen   = input.int(14, "ATR期間", minval = 1, group = G_MA)
+rsiLen   = input.int(14, "RSI期間", minval = 2, group = G_MA)
+volLen   = input.int(25, "出来高倍率の分母（平均出来高の期間）", minval = 1, group = G_MA)
+trendMaLen = input.int(200, "長期トレンド: 終値がn本MAより上の銘柄だけ買い（下だけ売り）", minval = 0, group = G_MA,
+              tooltip = "日足なら200日線。0で無効。n本分のデータがそろうまではスイングのシグナルを出さない（10年の検証で1トレードの質が改善）")
+
+boLen       = input.int(20, "ブレイクアウト: 高値更新の期間", minval = 2, group = G_SW)
+volRatioMin = input.float(1.5, "ブレイクアウト: 出来高倍率 以上", step = 0.1, group = G_SW)
+closePosMin = input.float(0.6, "ブレイクアウト: 引け位置（レンジ内 0〜1）以上", step = 0.05, group = G_SW)
+rsiBoMax    = input.float(80, "ブレイクアウト: RSI 以下", group = G_SW)
+devMax      = input.float(15, "ブレイクアウト: 中期MA乖離率% 以下", group = G_SW)
+pbLook      = input.int(3, "押し目: 何本以内に中期MA付近まで押したか", minval = 1, group = G_SW)
+pbAtr       = input.float(0.5, "押し目: 中期MA + n×ATR 以内", step = 0.1, group = G_SW)
+rsiPbMin    = input.float(40, "押し目: RSI 下限", group = G_SW)
+rsiPbMax    = input.float(65, "押し目: RSI 上限", group = G_SW)
+rsiRsMin    = input.float(35, "戻り売り: RSI 下限", group = G_SW)
+rsiRsMax    = input.float(60, "戻り売り: RSI 上限", group = G_SW)
+rsiBdMin    = input.float(20, "ブレイクダウン: RSI 以上", group = G_SW)
+stopAtr     = input.float(2.0, "損切り目安 = 終値 ∓ n×ATR", step = 0.1, group = G_SW)
+tpR         = input.float(2.0, "利確目安（R倍）", step = 0.1, group = G_SW)
+
+orMin      = input.int(15, "オープニングレンジ（分）", options = [5, 10, 15, 30, 60], group = G_DAY)
+entrySess  = input.session("0905-1115,1230-1430", "新規エントリー時間（JST）", group = G_DAY,
+              tooltip = "前場・後場の時間帯をカンマ区切りで。寄り直後・昼休み前・大引け前を避ける")
+vwapMult   = input.float(1.0, "VWAPバンド（σ）", step = 0.5, group = G_DAY)
+dayVolLen  = input.int(20, "出来高平均（本数）", minval = 1, group = G_DAY)
+dayVolMult = input.float(1.5, "ORB: 出来高が平均の n 倍以上", step = 0.1, group = G_DAY)
+maxGap     = input.float(5.0, "ギャップ上限%（超えたら順張りしない）", step = 0.5, group = G_DAY)
+vwTol      = input.float(0.3, "VWAP反発: VWAP + n×ATR まで押した", step = 0.1, group = G_DAY)
+useDTrend  = input.bool(true, "日足トレンドに沿う方向だけ（前日終値と日足中期MA）", group = G_DAY)
+dayStopAtr = input.float(1.5, "損切り目安 = 終値 ∓ n×ATR（分足ATR）", step = 0.1, group = G_DAY)
+dayTpR     = input.float(1.5, "利確目安（R倍）", step = 0.1, group = G_DAY)
+
+mktSym   = input.symbol("TVC:NI225", "地合いの指数", group = G_MKT, tooltip = "日経平均。TOPIXなら TSE:1306、グロースなら TSE:2516 など")
+mktLen   = input.int(75, "指数の移動平均（日）", minval = 1, group = G_MKT)
+useMktSg = input.bool(false, "地合いが悪い日はシグナルを出さない", group = G_MKT)
+
+roeMin     = input.float(8,  "ROE% 以上", group = G_FUND)
+opmMin     = input.float(10, "営業利益率% 以上", group = G_FUND)
+revGMin    = input.float(5,  "売上高成長率%（前期比）以上", group = G_FUND)
+epsGMin    = input.float(0,  "EPS成長率%（前期比）以上", group = G_FUND)
+eqRatioMin = input.float(40, "自己資本比率% 以上", group = G_FUND)
+perMax     = input.float(25, "PER 以下（かつ黒字）", group = G_FUND)
+fundMin    = input.int(4, "合格ライン（7項目中）", minval = 0, maxval = 7, group = G_FUND,
+              tooltip = "データが無い項目がある場合は、取得できた項目数に比例して合格ラインを下げる")
+useFundSg  = input.bool(false, "ファンダ不合格の銘柄はスイングのシグナルを出さない", group = G_FUND)
+
+showMA     = input.bool(true, "移動平均", group = G_VIEW)
+showCloud  = input.bool(true, "トレンド帯（中期MA〜長期MA）", group = G_VIEW)
+showSig    = input.bool(true, "シグナル", group = G_VIEW)
+showLevels = input.bool(true, "直近シグナルの損切り・利確ライン", group = G_VIEW)
+showVwap   = input.bool(true, "VWAP（分足）", group = G_VIEW)
+showOR     = input.bool(true, "オープニングレンジ（分足）", group = G_VIEW)
+showPD     = input.bool(true, "前日 高値・安値・終値（分足）", group = G_VIEW)
+showTable  = input.bool(true, "情報パネル", group = G_VIEW)
+tablePosIn = input.string("右上", "情報パネルの位置", options = ["右上", "右下", "左上", "左下"], group = G_VIEW)
+
+const string TZ = "Asia/Tokyo"
+isDay = modeIn == "デイ" or (modeIn == "自動" and timeframe.isintraday)
+
+// ───────────── テクニカル（共通） ─────────────
+maS     = ta.sma(close, maSLen)
+maM     = ta.sma(close, maMLen)
+maL     = ta.sma(close, maLLen)
+maMPrev = maM[slopeLen]
+atr     = ta.atr(atrLen)
+rsi     = ta.rsi(close, rsiLen)
+volMa   = ta.sma(volume, volLen)
+volRatio = volMa > 0 ? volume / volMa : na
+rng      = high - low
+closePos = rng > 0 ? (close - low) / rng : 0.5
+dev      = maM != 0 ? (close - maM) / maM * 100 : na
+hhPrev   = ta.highest(high, boLen)[1]
+llPrev   = ta.lowest(low, boLen)[1]
+lowPb    = ta.lowest(low, pbLook)
+highPb   = ta.highest(high, pbLook)
+
+ready       = not na(maS) and not na(maM) and not na(maL) and not na(maMPrev) and not na(atr) and not na(rsi)
+upTrend     = ready and close > maL and maM > maL and maM > maMPrev
+downTrend   = ready and close < maL and maM < maL and maM < maMPrev
+perfectUp   = ready and maS > maM and maM > maL
+perfectDown = ready and maS < maM and maM < maL
+
+// ───────────── 地合い（指数の前日終値 vs 移動平均） ─────────────
+[mktC, mktMa] = request.security(mktSym, "1D", [close[1], ta.sma(close, mktLen)[1]], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+mktUp   = na(mktMa) or mktC > mktMa
+mktDown = na(mktMa) or mktC < mktMa
+
+// ───────────── ファンダメンタルズ ─────────────
+// 取得できない項目は na になり、採点対象から外れる。
+epsTTM  = request.financial(syminfo.tickerid, "EARNINGS_PER_SHARE_BASIC", "TTM", ignore_invalid_symbol = true)
+bvps    = request.financial(syminfo.tickerid, "BOOK_VALUE_PER_SHARE", "FQ", ignore_invalid_symbol = true)
+revTTM  = request.financial(syminfo.tickerid, "TOTAL_REVENUE", "TTM", ignore_invalid_symbol = true)
+opTTM   = request.financial(syminfo.tickerid, "OPER_INCOME", "TTM", ignore_invalid_symbol = true)
+niTTM   = request.financial(syminfo.tickerid, "NET_INCOME", "TTM", ignore_invalid_symbol = true)
+equityQ = request.financial(syminfo.tickerid, "TOTAL_EQUITY", "FQ", ignore_invalid_symbol = true)
+assetsQ = request.financial(syminfo.tickerid, "TOTAL_ASSETS", "FQ", ignore_invalid_symbol = true)
+fcfTTM  = request.financial(syminfo.tickerid, "FREE_CASH_FLOW", "TTM", ignore_invalid_symbol = true)
+revFY   = request.financial(syminfo.tickerid, "TOTAL_REVENUE", "FY", ignore_invalid_symbol = true)
+epsFY   = request.financial(syminfo.tickerid, "EARNINGS_PER_SHARE_BASIC", "FY", ignore_invalid_symbol = true)
+
+//@function 値が変わる直前の値（前期の通期実績）を返す。チャートの履歴内で決算期が切り替わっている必要がある。
+prevDistinct(float src) =>
+    var float cur = na
+    var float prv = na
+    if not na(src) and (na(cur) or src != cur)
+        prv := cur
+        cur := src
+    prv
+
+revPrev = prevDistinct(revFY)
+epsPrev = prevDistinct(epsFY)
+
+per     = epsTTM > 0 ? close / epsTTM : na
+pbr     = bvps > 0 ? close / bvps : na
+roe     = equityQ > 0 ? niTTM / equityQ * 100 : na
+opm     = revTTM > 0 ? opTTM / revTTM * 100 : na
+eqRatio = assetsQ > 0 ? equityQ / assetsQ * 100 : na
+revG    = revPrev > 0 ? (revFY - revPrev) / revPrev * 100 : na
+epsG    = epsPrev > 0 ? (epsFY - epsPrev) / epsPrev * 100 : na
+
+avail(float v) => na(v) ? 0 : 1
+passed(float v, bool cond) => na(v) ? 0 : cond ? 1 : 0
+
+fMax = avail(roe) + avail(opm) + avail(revG) + avail(epsG) + avail(eqRatio) + avail(fcfTTM) + avail(epsTTM)
+fPts = passed(roe, roe >= roeMin) + passed(opm, opm >= opmMin) + passed(revG, revG >= revGMin) +
+     passed(epsG, epsG >= epsGMin) + passed(eqRatio, eqRatio >= eqRatioMin) + passed(fcfTTM, fcfTTM > 0) +
+     passed(epsTTM, epsTTM > 0 and close / epsTTM <= perMax)
+fNeed  = fMax == 0 ? 0 : math.ceil(fundMin * fMax / 7.0)
+fundOk = fMax == 0 or fPts >= fNeed
+
+nextEarn   = earnings.future_time
+daysToEarn = na(nextEarn) ? na : (nextEarn - time) / 86400000.0
+
+// ───────────── スイングシグナル ─────────────
+boSig = ready and not na(hhPrev) and not na(volRatio) and close > hhPrev and volRatio >= volRatioMin and
+     closePos >= closePosMin and close > maM and maM >= maMPrev and rsi <= rsiBoMax and dev <= devMax
+pbSig = ready and not boSig and upTrend and lowPb <= maM + pbAtr * atr and close > maM and close > high[1] and
+     close > open and rsi >= rsiPbMin and rsi <= rsiPbMax
+bdSig = ready and not boSig and not pbSig and not na(llPrev) and not na(volRatio) and close < llPrev and
+     volRatio >= volRatioMin and closePos <= 1 - closePosMin and close < maM and maM <= maMPrev and
+     rsi >= rsiBdMin and dev >= -devMax
+rsSig = ready and not boSig and not pbSig and not bdSig and downTrend and highPb >= maM - pbAtr * atr and
+     close < maM and close < low[1] and close < open and rsi >= rsiRsMin and rsi <= rsiRsMax
+
+// 長期トレンドフィルター（既定 200本）。n本分のデータがそろうまではシグナルを出さない
+maT       = ta.sma(close, math.max(trendMaLen, 1))
+trendUpOk = trendMaLen == 0 or (not na(maT) and close > maT)
+trendDnOk = trendMaLen == 0 or (not na(maT) and close < maT)
+boOk = boSig and trendUpOk
+pbOk = pbSig and trendUpOk
+bdOk = bdSig and trendDnOk
+rsOk = rsSig and trendDnOk
+
+swLongOk  = (not useMktSg or mktUp) and (not useFundSg or fundOk)
+swShortOk = showShort and (not useMktSg or mktDown)
+
+// ───────────── デイトレ（VWAP・OR・前日値） ─────────────
+newDay = timeframe.change("1D")
+var int   dayStartT = na
+var float orH = na
+var float orL = na
+var float dayOpen = na
+if newDay
+    dayStartT := time
+    orH := high
+    orL := low
+    dayOpen := open
+else if not na(dayStartT) and time < dayStartT + orMin * 60000
+    orH := math.max(orH, high)
+    orL := math.min(orL, low)
+orReady = not na(dayStartT) and time >= dayStartT + orMin * 60000
+orMid   = (orH + orL) / 2
+
+[vwapV, vwapU, vwapL] = ta.vwap(hlc3, newDay, vwapMult)
+[pdH, pdL, pdC, dMaM] = request.security(syminfo.tickerid, "1D", [high[1], low[1], close[1], ta.sma(close, maMLen)[1]], lookahead = barmerge.lookahead_on)
+gapPct  = pdC > 0 ? (dayOpen - pdC) / pdC * 100 : na
+dVolMa  = ta.sma(volume, dayVolLen)
+inWin   = not na(time(timeframe.period, entrySess, TZ))
+dTrendUp = not useDTrend or na(dMaM) or pdC > dMaM
+dTrendDn = not useDTrend or na(dMaM) or pdC < dMaM
+volOk   = dVolMa > 0 and volume >= dVolMa * dayVolMult
+gapOkL  = na(gapPct) or gapPct <= maxGap
+gapOkS  = na(gapPct) or gapPct >= -maxGap
+
+orbL = orReady and inWin and close > orH and close[1] <= orH and close > vwapV and volOk and dTrendUp and gapOkL
+orbS = orReady and inWin and close < orL and close[1] >= orL and close < vwapV and volOk and dTrendDn and gapOkS
+vwbL = orReady and inWin and not orbL and close > vwapV and low <= vwapV + vwTol * atr and close > open and
+     vwapV > vwapV[3] and close > orMid and dTrendUp
+vwbS = orReady and inWin and not orbS and close < vwapV and high >= vwapV - vwTol * atr and close < open and
+     vwapV < vwapV[3] and close < orMid and dTrendDn
+
+dayLongOk  = not useMktSg or mktUp
+dayShortOk = showShort and (not useMktSg or mktDown)
+
+// ───────────── シグナルの集約 ─────────────
+string sigName = ""
+int    sigSide = 0
+if not isDay
+    if boOk and swLongOk
+        sigName := "BO"
+        sigSide := 1
+    else if pbOk and swLongOk
+        sigName := "PB"
+        sigSide := 1
+    else if bdOk and swShortOk
+        sigName := "BD"
+        sigSide := -1
+    else if rsOk and swShortOk
+        sigName := "RS"
+        sigSide := -1
+else
+    if orbL and dayLongOk
+        sigName := "ORB"
+        sigSide := 1
+    else if vwbL and dayLongOk
+        sigName := "VWAP"
+        sigSide := 1
+    else if orbS and dayShortOk
+        sigName := "ORB"
+        sigSide := -1
+    else if vwbS and dayShortOk
+        sigName := "VWAP"
+        sigSide := -1
+
+sigRisk = (isDay ? dayStopAtr : stopAtr) * atr
+sigSL   = close - sigSide * sigRisk
+sigTP   = close + sigSide * (isDay ? dayTpR : tpR) * sigRisk
+
+// ───────────── 描画 ─────────────
+plot(showMA ? maS : na, "MA短", color.new(#f5a623, 0), 1)
+pM = plot(showMA ? maM : na, "MA中", color.new(#e0457b, 0), 2)
+pL = plot(showMA ? maL : na, "MA長", color.new(#3d7fe0, 0), 2)
+plot(showMA and trendMaLen > 0 ? maT : na, "長期トレンドMA", color.new(color.gray, 20), 2)
+cloudCol = upTrend ? color.new(color.teal, 85) : downTrend ? color.new(color.red, 85) : color.new(color.gray, 92)
+fill(pM, pL, color = showCloud ? cloudCol : na, title = "トレンド帯")
+
+pV  = plot(isDay and showVwap ? vwapV : na, "VWAP", color.new(#9b59b6, 0), 2, plot.style_linebr)
+pVU = plot(isDay and showVwap ? vwapU : na, "VWAP+σ", color.new(#9b59b6, 60), 1, plot.style_linebr)
+pVL = plot(isDay and showVwap ? vwapL : na, "VWAP−σ", color.new(#9b59b6, 60), 1, plot.style_linebr)
+fill(pVU, pVL, color = color.new(#9b59b6, 94), title = "VWAPバンド")
+plot(isDay and showOR and orReady ? orH : na, "OR高値", color.new(color.green, 0), 1, plot.style_linebr)
+plot(isDay and showOR and orReady ? orL : na, "OR安値", color.new(color.red, 0), 1, plot.style_linebr)
+plot(isDay and showPD and not newDay ? pdH : na, "前日高値", color.new(color.gray, 20), 1, plot.style_linebr)
+plot(isDay and showPD and not newDay ? pdL : na, "前日安値", color.new(color.gray, 20), 1, plot.style_linebr)
+plot(isDay and showPD and not newDay ? pdC : na, "前日終値", color.new(color.gray, 50), 1, plot.style_linebr)
+
+plotshape(showSig and sigName == "BO", "BO ブレイクアウト買い", shape.triangleup, location.belowbar, color.new(color.teal, 0), size = size.small, text = "BO", textcolor = color.teal)
+plotshape(showSig and sigName == "PB", "PB 押し目買い", shape.triangleup, location.belowbar, color.new(color.green, 0), size = size.small, text = "PB", textcolor = color.green)
+plotshape(showSig and sigName == "BD", "BD ブレイクダウン売り", shape.triangledown, location.abovebar, color.new(color.maroon, 0), size = size.small, text = "BD", textcolor = color.maroon)
+plotshape(showSig and sigName == "RS", "RS 戻り売り", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.small, text = "RS", textcolor = color.red)
+plotshape(showSig and sigName == "ORB" and sigSide > 0, "ORB買い", shape.labelup, location.belowbar, color.new(color.teal, 0), size = size.tiny, text = "ORB", textcolor = color.white)
+plotshape(showSig and sigName == "VWAP" and sigSide > 0, "VWAP反発買い", shape.labelup, location.belowbar, color.new(color.green, 0), size = size.tiny, text = "VW", textcolor = color.white)
+plotshape(showSig and sigName == "ORB" and sigSide < 0, "ORB売り", shape.labeldown, location.abovebar, color.new(color.maroon, 0), size = size.tiny, text = "ORB", textcolor = color.white)
+plotshape(showSig and sigName == "VWAP" and sigSide < 0, "VWAP反落売り", shape.labeldown, location.abovebar, color.new(color.red, 0), size = size.tiny, text = "VW", textcolor = color.white)
+
+// 直近シグナルの損切り・利確ライン
+var line  slLn = na
+var line  tpLn = na
+var label lvLb = na
+if showLevels and sigSide != 0 and barstate.isconfirmed
+    line.delete(slLn)
+    line.delete(tpLn)
+    label.delete(lvLb)
+    slLn := line.new(bar_index, sigSL, bar_index + 15, sigSL, color = color.red, style = line.style_dashed)
+    tpLn := line.new(bar_index, sigTP, bar_index + 15, sigTP, color = color.teal, style = line.style_dashed)
+    lvLb := label.new(bar_index + 15, sigTP, "利確 " + str.tostring(sigTP, format.mintick) + "\n損切り " + str.tostring(sigSL, format.mintick) +
+         "\n100株リスク " + str.tostring(math.round(sigRisk * 100)) + "円", style = label.style_label_left,
+         color = color.new(color.black, 30), textcolor = color.white, size = size.small)
+
+// ───────────── アラート ─────────────
+alertcondition(sigName == "BO", "BO ブレイクアウト買い", "{{ticker}} ブレイクアウト買い 終値 {{close}}")
+alertcondition(sigName == "PB", "PB 押し目買い", "{{ticker}} 押し目買い 終値 {{close}}")
+alertcondition(sigName == "BD", "BD ブレイクダウン売り", "{{ticker}} ブレイクダウン売り 終値 {{close}}")
+alertcondition(sigName == "RS", "RS 戻り売り", "{{ticker}} 戻り売り 終値 {{close}}")
+alertcondition(sigName == "ORB" and sigSide > 0, "ORB買い", "{{ticker}} ORB買い {{close}}")
+alertcondition(sigName == "ORB" and sigSide < 0, "ORB売り", "{{ticker}} ORB売り {{close}}")
+alertcondition(sigName == "VWAP" and sigSide > 0, "VWAP反発買い", "{{ticker}} VWAP反発買い {{close}}")
+alertcondition(sigName == "VWAP" and sigSide < 0, "VWAP反落売り", "{{ticker}} VWAP反落売り {{close}}")
+maCrossDn = ta.crossunder(close, maM)
+alertcondition(not isDay and maCrossDn, "中期MA割れ（保有確認）", "{{ticker}} 中期MA割れ 終値 {{close}}")
+
+// 「alert() 関数呼び出しのみ」でアラートを作ると、損切り・利確つきの詳細メッセージが届く
+if sigSide != 0 and barstate.isconfirmed
+    alert(syminfo.ticker + " " + (sigSide > 0 ? "買い" : "売り") + " [" + sigName + "] 終値 " + str.tostring(close, format.mintick) +
+         " / 損切り " + str.tostring(sigSL, format.mintick) + " / 利確 " + str.tostring(sigTP, format.mintick) +
+         " / ファンダ " + str.tostring(fPts) + "/" + str.tostring(fMax), alert.freq_once_per_bar_close)
+
+// ───────────── 情報パネル ─────────────
+fmt(float v, string f) => na(v) ? "—" : str.tostring(v, f)
+okCol(bool ok) => ok ? color.new(#4cd3a5, 0) : color.new(#ff7a7a, 0)
+neutral = color.new(color.white, 0)
+
+tablePos = switch tablePosIn
+    "右下" => position.bottom_right
+    "左上" => position.top_left
+    "左下" => position.bottom_left
+    => position.top_right
+
+var table info = table.new(tablePos, 2, 24, bgcolor = color.new(#131722, 15), border_width = 1,
+     border_color = color.new(color.gray, 70), frame_width = 1, frame_color = color.new(color.gray, 40))
+
+row(int r, string k, string v, color c) =>
+    table.cell(info, 0, r, k, text_color = color.silver, text_size = size.small, text_halign = text.align_left)
+    table.cell(info, 1, r, v, text_color = c, text_size = size.small, text_halign = text.align_right)
+
+if showTable and barstate.islast
+    trendTxt = perfectUp and upTrend ? "上昇（PO）" : upTrend ? "上昇" : perfectDown and downTrend ? "下降（逆PO）" : downTrend ? "下降" : ready ? "もみ合い" : "データ不足"
+    trendCol = upTrend ? okCol(true) : downTrend ? okCol(false) : neutral
+    int r = 0
+    row(r, "JP-SD  " + syminfo.ticker, isDay ? "デイ" : "スイング", neutral)
+    r += 1
+    row(r, "トレンド", trendTxt, trendCol)
+    r += 1
+    row(r, "RSI" + str.tostring(rsiLen), fmt(rsi, "0.0"), rsi >= 75 or rsi <= 25 ? color.orange : neutral)
+    r += 1
+    row(r, "ATR%", fmt(atr / close * 100, "0.00") + "%", neutral)
+    r += 1
+    row(r, "出来高倍率", fmt(volRatio, "0.00"), volRatio >= 1.5 ? okCol(true) : neutral)
+    r += 1
+    row(r, "中期MA乖離", fmt(dev, "0.0") + "%", math.abs(nz(dev)) >= 15 ? color.orange : neutral)
+    r += 1
+    row(r, "長期トレンド（" + str.tostring(trendMaLen) + "本MA）", trendMaLen == 0 ? "無効" : na(maT) ? "データ不足" : close > maT ? "上（買い対象）" : "下（買わない）",
+         trendMaLen == 0 or na(maT) ? neutral : okCol(close > maT))
+    r += 1
+    row(r, "地合い（指数>" + str.tostring(mktLen) + "MA）", na(mktMa) ? "—" : mktUp ? "良好" : "悪化", na(mktMa) ? neutral : okCol(mktUp))
+    r += 1
+    if isDay
+        row(r, "VWAP乖離", fmt((close - vwapV) / vwapV * 100, "0.00") + "%", close > vwapV ? okCol(true) : okCol(false))
+        r += 1
+        row(r, "OR 高値／安値", fmt(orH, format.mintick) + " / " + fmt(orL, format.mintick), neutral)
+        r += 1
+        row(r, "寄りギャップ", fmt(gapPct, "0.00") + "%", math.abs(nz(gapPct)) > maxGap ? color.orange : neutral)
+        r += 1
+        row(r, "日足トレンド", na(dMaM) ? "—" : pdC > dMaM ? "中期MAの上" : "中期MAの下", na(dMaM) ? neutral : okCol(pdC > dMaM))
+        r += 1
+    row(r, "── ファンダメンタルズ", "", neutral)
+    r += 1
+    row(r, "PER", fmt(per, "0.0") + (na(per) and not na(epsTTM) and epsTTM <= 0 ? "（赤字）" : "倍"), na(epsTTM) ? neutral : okCol(epsTTM > 0 and nz(per) <= perMax))
+    r += 1
+    row(r, "PBR", fmt(pbr, "0.00") + "倍", neutral)
+    r += 1
+    row(r, "ROE", fmt(roe, "0.0") + "%", na(roe) ? neutral : okCol(roe >= roeMin))
+    r += 1
+    row(r, "営業利益率", fmt(opm, "0.0") + "%", na(opm) ? neutral : okCol(opm >= opmMin))
+    r += 1
+    row(r, "自己資本比率", fmt(eqRatio, "0.0") + "%", na(eqRatio) ? neutral : okCol(eqRatio >= eqRatioMin))
+    r += 1
+    row(r, "売上高成長（前期比）", fmt(revG, "0.0") + "%", na(revG) ? neutral : okCol(revG >= revGMin))
+    r += 1
+    row(r, "EPS成長（前期比）", fmt(epsG, "0.0") + "%", na(epsG) ? neutral : okCol(epsG >= epsGMin))
+    r += 1
+    row(r, "FCF（TTM）", na(fcfTTM) ? "—" : fcfTTM > 0 ? "プラス" : "マイナス", na(fcfTTM) ? neutral : okCol(fcfTTM > 0))
+    r += 1
+    row(r, "ファンダ判定", fMax == 0 ? "データなし" : str.tostring(fPts) + "/" + str.tostring(fMax) + (fundOk ? " 合格" : " 不合格"), fMax == 0 ? neutral : okCol(fundOk))
+    r += 1
+    row(r, "次回決算", na(nextEarn) ? "—" : str.format_time(nextEarn, "yyyy-MM-dd", TZ) + "（" + str.tostring(math.floor(daysToEarn)) + "日後）",
+         not na(daysToEarn) and daysToEarn <= 7 ? color.orange : neutral)

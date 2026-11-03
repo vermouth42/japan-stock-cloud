@@ -1,0 +1,415 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+//
+// JP Swing/Day Strategy [EA] — 日本株（東証）デイトレ・スイングの自動売買ストラテジー
+//
+//  シグナルは JP_SwingDay_Indicator.pine と同じ定義（docs/strategy_spec.md）。
+//  ・数量     : 1トレードの損失が資金の n% になるよう、単元株（100株）単位で計算
+//  ・決済     : 初期損切り（ATR）→ 第1利確で半分 → 残りは建値ストップ＋ATRトレーリング
+//               スイング: 中期MA割れ・最大保有日数・決算前手仕舞い
+//               デイ    : VWAP割れ・15:20 に強制決済（持ち越さない）
+//  ・アラート : 発注のたびに JSON を送る。アラート作成画面の「メッセージ」を
+//               {{strategy.order.alert_message}} だけにして Webhook URL を指定する。
+//
+//  初期設定: 資金 300万円・手数料 0（国内株の売買手数料無料プランを想定）・スリッページ 1ティック。
+//@version=6
+strategy("JP Swing/Day Strategy [EA]", shorttitle = "JP-EA", overlay = true,
+     initial_capital = 3000000, currency = currency.JPY,
+     default_qty_type = strategy.fixed, default_qty_value = 100,
+     commission_type = strategy.commission.percent, commission_value = 0.0,
+     slippage = 1, pyramiding = 0, process_orders_on_close = false,
+     margin_long = 100, margin_short = 100, max_labels_count = 100)
+
+// ───────────── 入力 ─────────────
+const string G_BASE = "基本"
+const string G_MM   = "資金管理"
+const string G_SET  = "使うセットアップ"
+const string G_MA   = "移動平均・トレンド"
+const string G_SW   = "スイング: シグナル"
+const string G_SWX  = "スイング: 決済"
+const string G_SWF  = "スイング: フィルター（地合い・ファンダ・決算）"
+const string G_DAY  = "デイ: シグナル"
+const string G_DAYX = "デイ: 決済"
+const string G_FUND = "ファンダメンタルズの基準"
+
+modeIn     = input.string("自動", "モード", options = ["自動", "スイング", "デイ"], group = G_BASE,
+              tooltip = "自動: 分足ならデイ、日足以上ならスイング。デイは分足（1〜15分足）で使う")
+allowLong  = input.bool(true, "買い（現物・信用買い）", group = G_BASE)
+allowShort = input.bool(false, "売り（信用売り）", group = G_BASE,
+              tooltip = "空売り規制（前日終値から10%以上の下落時のアップティックルール）や貸株料・逆日歩はバックテストに含まれない")
+startTime  = input.time(timestamp("01 Jan 2015 00:00 +0900"), "検証開始日", group = G_BASE)
+
+riskPct   = input.float(1.0, "1トレードの許容損失（資金の%）", minval = 0.1, step = 0.1, group = G_MM)
+maxPosPct = input.float(50, "1銘柄の最大投資額（資金の%）", minval = 1, step = 5, group = G_MM)
+lotSize   = input.int(100, "売買単位（株）", minval = 1, group = G_MM, tooltip = "単元株は100。単元未満株（S株など）で試すなら1")
+
+useBO  = input.bool(true, "BO ブレイクアウト買い", group = G_SET)
+usePB  = input.bool(true, "PB 押し目買い", group = G_SET)
+useBD  = input.bool(true, "BD ブレイクダウン売り", group = G_SET)
+useRS  = input.bool(true, "RS 戻り売り", group = G_SET)
+useORB = input.bool(true, "ORB オープニングレンジブレイク（デイ）", group = G_SET)
+useVWB = input.bool(true, "VWAP 反発／反落（デイ）", group = G_SET)
+
+maSLen   = input.int(5,  "短期MA", minval = 1, group = G_MA)
+maMLen   = input.int(25, "中期MA", minval = 1, group = G_MA)
+maLLen   = input.int(75, "長期MA", minval = 1, group = G_MA)
+slopeLen = input.int(5,  "中期MAの傾き判定（n本前と比較）", minval = 1, group = G_MA)
+atrLen   = input.int(14, "ATR期間", minval = 1, group = G_MA)
+rsiLen   = input.int(14, "RSI期間", minval = 2, group = G_MA)
+volLen   = input.int(25, "出来高倍率の分母（平均出来高の期間）", minval = 1, group = G_MA)
+trendMaLen = input.int(200, "長期トレンド: 終値がn本MAより上の銘柄だけ買い（下だけ売り）", minval = 0, group = G_MA,
+              tooltip = "日足なら200日線。0で無効。n本分のデータがそろうまではスイングのシグナルを出さない（10年の検証で1トレードの質が改善）")
+
+boLen       = input.int(20, "ブレイクアウト: 高値更新の期間", minval = 2, group = G_SW)
+volRatioMin = input.float(1.5, "ブレイクアウト: 出来高倍率 以上", step = 0.1, group = G_SW)
+closePosMin = input.float(0.6, "ブレイクアウト: 引け位置（レンジ内 0〜1）以上", step = 0.05, group = G_SW)
+rsiBoMax    = input.float(80, "ブレイクアウト: RSI 以下", group = G_SW)
+devMax      = input.float(15, "ブレイクアウト: 中期MA乖離率% 以下", group = G_SW)
+pbLook      = input.int(3, "押し目: 何本以内に中期MA付近まで押したか", minval = 1, group = G_SW)
+pbAtr       = input.float(0.5, "押し目: 中期MA + n×ATR 以内", step = 0.1, group = G_SW)
+rsiPbMin    = input.float(40, "押し目: RSI 下限", group = G_SW)
+rsiPbMax    = input.float(65, "押し目: RSI 上限", group = G_SW)
+rsiRsMin    = input.float(35, "戻り売り: RSI 下限", group = G_SW)
+rsiRsMax    = input.float(60, "戻り売り: RSI 上限", group = G_SW)
+rsiBdMin    = input.float(20, "ブレイクダウン: RSI 以上", group = G_SW)
+
+stopAtr   = input.float(2.0, "初期損切り = シグナル終値 ∓ n×ATR", step = 0.1, group = G_SWX)
+trailAtr  = input.float(3.0, "トレーリング = 最高値（最安値）∓ n×ATR", step = 0.1, group = G_SWX)
+tpR       = input.float(2.0, "第1利確（R倍）", step = 0.1, group = G_SWX)
+tpPct     = input.float(50, "第1利確で決済する割合%", minval = 0, maxval = 100, step = 10, group = G_SWX,
+             tooltip = "単元未満になる分は切り捨て（100株だけの建玉は分割せずトレーリングのみ）")
+maxHold   = input.int(30, "最大保有日数（0で無効）", minval = 0, group = G_SWX)
+useMaExit = input.bool(true, "終値で中期MAを割ったら手仕舞い", group = G_SWX)
+maExitAtr = input.float(1.0, "中期MA割れの余裕（n×ATR）", step = 0.1, group = G_SWX,
+             tooltip = "押し目買いは中期MAの近くで入るため、余裕なしだとダマシで振り落とされやすい")
+
+useMktSw   = input.bool(false, "地合いフィルター（指数が移動平均の上なら買い、下なら売り）", group = G_SWF,
+              tooltip = "10年の検証では効果がなかったため既定はOFF")
+mktSym     = input.symbol("TVC:NI225", "地合いの指数", group = G_SWF, tooltip = "日経平均。TOPIXなら TSE:1306、グロースなら TSE:2516 など")
+mktLen     = input.int(75, "指数の移動平均（日）", minval = 1, group = G_SWF)
+useFundSw  = input.bool(true, "ファンダ合格銘柄だけ買う", group = G_SWF)
+fundMin    = input.int(4, "ファンダ合格ライン（7項目中）", minval = 0, maxval = 7, group = G_SWF)
+useEarn    = input.bool(true, "決算発表の n 日前からは新規エントリーしない", group = G_SWF,
+              tooltip = "TradingView の次回決算予定日を使う。予定日はリアルタイムでしか分からないため、過去のバックテストには効かない")
+earnDays   = input.int(3, "決算前の新規停止（日）", minval = 0, group = G_SWF)
+exitBefore = input.bool(false, "決算の前日に手仕舞う（リアルタイムのみ）", group = G_SWF)
+
+orMin      = input.int(15, "オープニングレンジ（分）", options = [5, 10, 15, 30, 60], group = G_DAY)
+entrySess  = input.session("0905-1115,1230-1430", "新規エントリー時間（JST）", group = G_DAY)
+vwapMult   = input.float(1.0, "VWAPバンド（σ）", step = 0.5, group = G_DAY)
+dayVolLen  = input.int(20, "出来高平均（本数）", minval = 1, group = G_DAY)
+dayVolMult = input.float(1.5, "ORB: 出来高が平均の n 倍以上", step = 0.1, group = G_DAY)
+maxGap     = input.float(5.0, "ギャップ上限%（超えたら順張りしない）", step = 0.5, group = G_DAY)
+vwTol      = input.float(0.3, "VWAP反発: VWAP + n×ATR まで押した", step = 0.1, group = G_DAY)
+useDTrend  = input.bool(true, "日足トレンドに沿う方向だけ（前日終値と日足中期MA）", group = G_DAY)
+useMktDay  = input.bool(false, "地合いフィルター（デイ）", group = G_DAY)
+maxTrades  = input.int(2, "1日の最大トレード数", minval = 1, group = G_DAY)
+
+dayStopAtr  = input.float(1.5, "初期損切り = シグナル終値 ∓ n×ATR（分足ATR）", step = 0.1, group = G_DAYX)
+dayTrailAtr = input.float(2.0, "トレーリング（n×ATR）", step = 0.1, group = G_DAYX)
+dayTpR      = input.float(1.5, "第1利確（R倍）", step = 0.1, group = G_DAYX)
+dayTpPct    = input.float(50, "第1利確で決済する割合%", minval = 0, maxval = 100, step = 10, group = G_DAYX)
+useVwapExit = input.bool(true, "終値でVWAPを割ったら手仕舞い", group = G_DAYX)
+flattenHHMM = input.int(1520, "強制決済の時刻（HHMM, JST）", minval = 900, maxval = 1530, group = G_DAYX,
+               tooltip = "大引け（15:25〜15:30 はクロージング・オークション）の前に全決済")
+
+roeMin     = input.float(8,  "ROE% 以上", group = G_FUND)
+opmMin     = input.float(10, "営業利益率% 以上", group = G_FUND)
+revGMin    = input.float(5,  "売上高成長率%（前期比）以上", group = G_FUND)
+epsGMin    = input.float(0,  "EPS成長率%（前期比）以上", group = G_FUND)
+eqRatioMin = input.float(40, "自己資本比率% 以上", group = G_FUND)
+perMax     = input.float(25, "PER 以下（かつ黒字）", group = G_FUND)
+
+const string TZ = "Asia/Tokyo"
+isDay = modeIn == "デイ" or (modeIn == "自動" and timeframe.isintraday)
+
+// ───────────── テクニカル（インジケーターと同じ） ─────────────
+maS     = ta.sma(close, maSLen)
+maM     = ta.sma(close, maMLen)
+maL     = ta.sma(close, maLLen)
+maMPrev = maM[slopeLen]
+atr     = ta.atr(atrLen)
+rsi     = ta.rsi(close, rsiLen)
+volMa   = ta.sma(volume, volLen)
+volRatio = volMa > 0 ? volume / volMa : na
+rng      = high - low
+closePos = rng > 0 ? (close - low) / rng : 0.5
+dev      = maM != 0 ? (close - maM) / maM * 100 : na
+hhPrev   = ta.highest(high, boLen)[1]
+llPrev   = ta.lowest(low, boLen)[1]
+lowPb    = ta.lowest(low, pbLook)
+highPb   = ta.highest(high, pbLook)
+
+ready     = not na(maS) and not na(maM) and not na(maL) and not na(maMPrev) and not na(atr) and not na(rsi)
+upTrend   = ready and close > maL and maM > maL and maM > maMPrev
+downTrend = ready and close < maL and maM < maL and maM < maMPrev
+
+boSig = ready and not na(hhPrev) and not na(volRatio) and close > hhPrev and volRatio >= volRatioMin and
+     closePos >= closePosMin and close > maM and maM >= maMPrev and rsi <= rsiBoMax and dev <= devMax
+pbSig = ready and not boSig and upTrend and lowPb <= maM + pbAtr * atr and close > maM and close > high[1] and
+     close > open and rsi >= rsiPbMin and rsi <= rsiPbMax
+bdSig = ready and not boSig and not pbSig and not na(llPrev) and not na(volRatio) and close < llPrev and
+     volRatio >= volRatioMin and closePos <= 1 - closePosMin and close < maM and maM <= maMPrev and
+     rsi >= rsiBdMin and dev >= -devMax
+rsSig = ready and not boSig and not pbSig and not bdSig and downTrend and highPb >= maM - pbAtr * atr and
+     close < maM and close < low[1] and close < open and rsi >= rsiRsMin and rsi <= rsiRsMax
+
+// 長期トレンドフィルター（既定 200本）。n本分のデータがそろうまではシグナルを出さない
+maT       = ta.sma(close, math.max(trendMaLen, 1))
+trendUpOk = trendMaLen == 0 or (not na(maT) and close > maT)
+trendDnOk = trendMaLen == 0 or (not na(maT) and close < maT)
+boOk = boSig and trendUpOk
+pbOk = pbSig and trendUpOk
+bdOk = bdSig and trendDnOk
+rsOk = rsSig and trendDnOk
+
+// ───────────── 地合い ─────────────
+[mktC, mktMa] = request.security(mktSym, "1D", [close[1], ta.sma(close, mktLen)[1]], lookahead = barmerge.lookahead_on, ignore_invalid_symbol = true)
+mktUp   = na(mktMa) or mktC > mktMa
+mktDown = na(mktMa) or mktC < mktMa
+
+// ───────────── ファンダメンタルズ（インジケーターと同じ） ─────────────
+epsTTM  = request.financial(syminfo.tickerid, "EARNINGS_PER_SHARE_BASIC", "TTM", ignore_invalid_symbol = true)
+revTTM  = request.financial(syminfo.tickerid, "TOTAL_REVENUE", "TTM", ignore_invalid_symbol = true)
+opTTM   = request.financial(syminfo.tickerid, "OPER_INCOME", "TTM", ignore_invalid_symbol = true)
+niTTM   = request.financial(syminfo.tickerid, "NET_INCOME", "TTM", ignore_invalid_symbol = true)
+equityQ = request.financial(syminfo.tickerid, "TOTAL_EQUITY", "FQ", ignore_invalid_symbol = true)
+assetsQ = request.financial(syminfo.tickerid, "TOTAL_ASSETS", "FQ", ignore_invalid_symbol = true)
+fcfTTM  = request.financial(syminfo.tickerid, "FREE_CASH_FLOW", "TTM", ignore_invalid_symbol = true)
+revFY   = request.financial(syminfo.tickerid, "TOTAL_REVENUE", "FY", ignore_invalid_symbol = true)
+epsFY   = request.financial(syminfo.tickerid, "EARNINGS_PER_SHARE_BASIC", "FY", ignore_invalid_symbol = true)
+
+prevDistinct(float src) =>
+    var float cur = na
+    var float prv = na
+    if not na(src) and (na(cur) or src != cur)
+        prv := cur
+        cur := src
+    prv
+
+revPrev = prevDistinct(revFY)
+epsPrev = prevDistinct(epsFY)
+roe     = equityQ > 0 ? niTTM / equityQ * 100 : na
+opm     = revTTM > 0 ? opTTM / revTTM * 100 : na
+eqRatio = assetsQ > 0 ? equityQ / assetsQ * 100 : na
+revG    = revPrev > 0 ? (revFY - revPrev) / revPrev * 100 : na
+epsG    = epsPrev > 0 ? (epsFY - epsPrev) / epsPrev * 100 : na
+
+avail(float v) => na(v) ? 0 : 1
+passed(float v, bool cond) => na(v) ? 0 : cond ? 1 : 0
+
+fMax = avail(roe) + avail(opm) + avail(revG) + avail(epsG) + avail(eqRatio) + avail(fcfTTM) + avail(epsTTM)
+fPts = passed(roe, roe >= roeMin) + passed(opm, opm >= opmMin) + passed(revG, revG >= revGMin) +
+     passed(epsG, epsG >= epsGMin) + passed(eqRatio, eqRatio >= eqRatioMin) + passed(fcfTTM, fcfTTM > 0) +
+     passed(epsTTM, epsTTM > 0 and close / epsTTM <= perMax)
+fNeed  = fMax == 0 ? 0 : math.ceil(fundMin * fMax / 7.0)
+fundOk = fMax == 0 or fPts >= fNeed
+
+nextEarn   = earnings.future_time
+daysToEarn = na(nextEarn) ? na : (nextEarn - time) / 86400000.0
+earnBlock  = useEarn and not na(daysToEarn) and daysToEarn >= 0 and daysToEarn <= earnDays
+
+// ───────────── デイトレ（インジケーターと同じ） ─────────────
+newDay = timeframe.change("1D")
+var int   dayStartT = na
+var float orH = na
+var float orL = na
+var float dayOpen = na
+if newDay
+    dayStartT := time
+    orH := high
+    orL := low
+    dayOpen := open
+else if not na(dayStartT) and time < dayStartT + orMin * 60000
+    orH := math.max(orH, high)
+    orL := math.min(orL, low)
+orReady = not na(dayStartT) and time >= dayStartT + orMin * 60000
+orMid   = (orH + orL) / 2
+
+[vwapV, vwapU, vwapL] = ta.vwap(hlc3, newDay, vwapMult)
+[pdH, pdL, pdC, dMaM] = request.security(syminfo.tickerid, "1D", [high[1], low[1], close[1], ta.sma(close, maMLen)[1]], lookahead = barmerge.lookahead_on)
+gapPct   = pdC > 0 ? (dayOpen - pdC) / pdC * 100 : na
+dVolMa   = ta.sma(volume, dayVolLen)
+inWin    = not na(time(timeframe.period, entrySess, TZ))
+dTrendUp = not useDTrend or na(dMaM) or pdC > dMaM
+dTrendDn = not useDTrend or na(dMaM) or pdC < dMaM
+volOk    = dVolMa > 0 and volume >= dVolMa * dayVolMult
+gapOkL   = na(gapPct) or gapPct <= maxGap
+gapOkS   = na(gapPct) or gapPct >= -maxGap
+
+orbL = orReady and inWin and close > orH and close[1] <= orH and close > vwapV and volOk and dTrendUp and gapOkL
+orbS = orReady and inWin and close < orL and close[1] >= orL and close < vwapV and volOk and dTrendDn and gapOkS
+vwbL = orReady and inWin and not orbL and close > vwapV and low <= vwapV + vwTol * atr and close > open and
+     vwapV > vwapV[3] and close > orMid and dTrendUp
+vwbS = orReady and inWin and not orbS and close < vwapV and high >= vwapV - vwTol * atr and close < open and
+     vwapV < vwapV[3] and close < orMid and dTrendDn
+
+hhmmClose = hour(time_close, TZ) * 100 + minute(time_close, TZ)
+
+// ───────────── アラート用 JSON ─────────────
+jsonBase(string event, string side) =>
+    '{"bot":"JP-EA","event":"' + event + '","mode":"' + (isDay ? "day" : "swing") + '","side":"' + side +
+         '","symbol":"' + syminfo.ticker + '","exchange":"' + syminfo.prefix + '","time":"' +
+         str.format_time(time_close, "yyyy-MM-dd HH:mm", TZ) + '"'
+
+jsonEntry(string side, string setup, int qty, float sl, float tp) =>
+    jsonBase("entry", side) + ',"setup":"' + setup + '","qty":' + str.tostring(qty) + ',"price":' +
+         str.tostring(close, format.mintick) + ',"sl":' + str.tostring(sl, format.mintick) + ',"tp":' +
+         str.tostring(tp, format.mintick) + '}'
+
+// qty: 株数（0 なら建玉すべて）。受け手は「保有株数を上限に」決済すること
+jsonExit(string side, string reason, float qty) =>
+    jsonBase("exit", side) + ',"reason":"' + reason + '","qty":' + str.tostring(qty) + ',"close_all":' +
+         (qty > 0 ? "false" : "true") + '}'
+
+// ───────────── 建玉管理 ─────────────
+//@function 許容損失と最大投資額から、単元株単位の数量を出す。
+calcQty(float price, float riskPerShare) =>
+    float eq     = strategy.equity
+    float byRisk = riskPerShare > 0 ? eq * riskPct / 100.0 / riskPerShare : 0.0
+    float byCap  = price > 0 ? eq * maxPosPct / 100.0 / price : 0.0
+    math.floor(math.min(byRisk, byCap) / lotSize) * lotSize
+
+inRange = time >= startTime
+posSize = strategy.position_size
+
+var float  initStop    = na
+var float  tpPrice     = na
+var float  tp1Qty      = 0.0
+var bool   tp1Done     = false
+var float  extreme     = na
+var int    entryIdx    = na
+var string curSetup    = ""
+var int    tradesToday = 0
+
+if newDay
+    tradesToday := 0
+if posSize == 0
+    tp1Done := false
+    extreme := na
+if posSize != 0 and nz(posSize[1]) == 0
+    entryIdx := bar_index
+if posSize != 0 and nz(posSize[1]) != 0 and math.abs(posSize) < math.abs(posSize[1])
+    tp1Done := true
+
+if posSize > 0
+    extreme := na(extreme) ? high : math.max(extreme, high)
+else if posSize < 0
+    extreme := na(extreme) ? low : math.min(extreme, low)
+
+// ストップ水準: 初期損切り → ATRトレーリング（有利な方向にだけ動く）→ 第1利確後は建値以上
+trailMult = isDay ? dayTrailAtr : trailAtr
+float stopLvl = na
+if posSize > 0
+    trail = extreme - trailMult * atr
+    stopLvl := na(trail) ? initStop : math.max(initStop, trail)
+    if tp1Done
+        stopLvl := math.max(stopLvl, strategy.position_avg_price)
+else if posSize < 0
+    trail = extreme + trailMult * atr
+    stopLvl := na(trail) ? initStop : math.min(initStop, trail)
+    if tp1Done
+        stopLvl := math.min(stopLvl, strategy.position_avg_price)
+
+sideTxt = posSize > 0 ? "long" : "short"
+posId   = posSize > 0 ? "L" : "S"
+
+// 終値ベースの手仕舞い（翌足の始値で約定。デイの強制決済だけはその足の終値で約定）
+bool flatNow = false
+if posSize != 0
+    held = bar_index - entryIdx + 1
+    string reason = ""
+    if isDay
+        if hhmmClose >= flattenHHMM or session.islastbar
+            strategy.close_all(comment = "引け前決済", alert_message = jsonExit("all", "eod", 0), immediately = true)
+            flatNow := true
+        else if useVwapExit and ((posSize > 0 and close < vwapV) or (posSize < 0 and close > vwapV))
+            reason := "vwap"
+    else
+        buffer = maExitAtr * atr
+        if useMaExit and ((posSize > 0 and close < maM - buffer) or (posSize < 0 and close > maM + buffer))
+            reason := "ma"
+        else if maxHold > 0 and held >= maxHold
+            reason := "time"
+        else if exitBefore and not na(daysToEarn) and daysToEarn <= 1
+            reason := "earnings"
+    if reason != ""
+        comment = reason == "vwap" ? "VWAP割れ" : reason == "ma" ? "MA割れ" : reason == "time" ? "期間満了" : "決算前"
+        strategy.close(posId, comment = comment, alert_message = jsonExit(sideTxt, reason, 0))
+
+// 損切り・利確注文（毎足、最新の水準に更新する）
+if posSize != 0 and not flatNow
+    stopCmt = stopLvl == initStop ? "損切り" : "トレール"
+    if not tp1Done and tp1Qty > 0
+        strategy.exit(posId + "-TP1", posId, qty = tp1Qty, limit = tpPrice, stop = stopLvl,
+             comment_profit = "利確1", comment_loss = stopCmt, alert_message = jsonExit(sideTxt, "tp1_or_stop", tp1Qty))
+    strategy.exit(posId + "-SL", posId, stop = stopLvl, comment = stopCmt, alert_message = jsonExit(sideTxt, "stop", 0))
+
+// 新規エントリー（ノーポジションのときだけ。成行で翌足の始値に約定）
+string lSetup = ""
+string sSetup = ""
+if isDay
+    lSetup := useORB and orbL ? "ORB" : useVWB and vwbL ? "VWAP" : ""
+    sSetup := useORB and orbS ? "ORB" : useVWB and vwbS ? "VWAP" : ""
+else
+    lSetup := useBO and boOk ? "BO" : usePB and pbOk ? "PB" : ""
+    sSetup := useBD and bdOk ? "BD" : useRS and rsOk ? "RS" : ""
+
+longFilter  = isDay ? (not useMktDay or mktUp) : ((not useMktSw or mktUp) and (not useFundSw or fundOk) and not earnBlock)
+shortFilter = isDay ? (not useMktDay or mktDown) : ((not useMktSw or mktDown) and not earnBlock)
+dayOk       = not isDay or (inWin and tradesToday < maxTrades and hhmmClose < flattenHHMM)
+
+if inRange and posSize == 0 and dayOk
+    int side = 0
+    string setup = ""
+    if allowLong and lSetup != "" and longFilter
+        side := 1
+        setup := lSetup
+    else if allowShort and sSetup != "" and shortFilter
+        side := -1
+        setup := sSetup
+    risk = (isDay ? dayStopAtr : stopAtr) * atr
+    if side != 0 and risk > 0
+        qty = calcQty(close, risk)
+        if qty >= lotSize
+            initStop := close - side * risk
+            tpPrice  := close + side * (isDay ? dayTpR : tpR) * risk
+            tp1Qty   := math.floor(qty * (isDay ? dayTpPct : tpPct) / 100.0 / lotSize) * lotSize
+            tp1Done  := false
+            extreme  := na
+            curSetup := setup
+            tradesToday += 1
+            id = side > 0 ? "L" : "S"
+            sd = side > 0 ? "long" : "short"
+            strategy.entry(id, side > 0 ? strategy.long : strategy.short, qty = qty, comment = setup,
+                 alert_message = jsonEntry(sd, setup, qty, initStop, tpPrice))
+            if tp1Qty > 0
+                strategy.exit(id + "-TP1", id, qty = tp1Qty, limit = tpPrice, stop = initStop,
+                     comment_profit = "利確1", comment_loss = "損切り", alert_message = jsonExit(sd, "tp1_or_stop", tp1Qty))
+            strategy.exit(id + "-SL", id, stop = initStop, comment = "損切り", alert_message = jsonExit(sd, "stop", 0))
+
+// ───────────── 描画 ─────────────
+plot(maM, "MA中", color.new(#e0457b, 40), 1)
+plot(maL, "MA長", color.new(#3d7fe0, 40), 1)
+plot(trendMaLen > 0 ? maT : na, "長期トレンドMA", color.new(color.gray, 30), 1)
+plot(isDay ? vwapV : na, "VWAP", color.new(#9b59b6, 20), 1, plot.style_linebr)
+plot(isDay and orReady ? orH : na, "OR高値", color.new(color.green, 40), 1, plot.style_linebr)
+plot(isDay and orReady ? orL : na, "OR安値", color.new(color.red, 40), 1, plot.style_linebr)
+plot(posSize != 0 ? stopLvl : na, "ストップ", color.new(color.red, 0), 2, plot.style_linebr)
+plot(posSize != 0 and not tp1Done and tp1Qty > 0 ? tpPrice : na, "第1利確", color.new(color.teal, 0), 2, plot.style_linebr)
+
+var table info = table.new(position.bottom_right, 2, 8, bgcolor = color.new(#131722, 15), border_width = 1,
+     border_color = color.new(color.gray, 70), frame_width = 1, frame_color = color.new(color.gray, 40))
+
+row(int r, string k, string v) =>
+    table.cell(info, 0, r, k, text_color = color.silver, text_size = size.small, text_halign = text.align_left)
+    table.cell(info, 1, r, v, text_color = color.white, text_size = size.small, text_halign = text.align_right)
+
+if barstate.islast
+    row(0, "JP-EA", isDay ? "デイ" : "スイング")
+    row(1, "建玉", posSize == 0 ? "なし" : (posSize > 0 ? "買い " : "売り ") + str.tostring(math.abs(posSize)) + "株（" + curSetup + "）")
+    row(2, "ストップ", na(stopLvl) ? "—" : str.tostring(stopLvl, format.mintick))
+    row(3, "第1利確", posSize == 0 or tp1Done or tp1Qty == 0 ? "—" : str.tostring(tpPrice, format.mintick))
+    row(4, "地合い", na(mktMa) ? "—" : mktUp ? "良好" : "悪化")
+    row(5, "ファンダ", fMax == 0 ? "データなし" : str.tostring(fPts) + "/" + str.tostring(fMax) + (fundOk ? " 合格" : " 不合格"))
+    row(6, "次回決算", na(nextEarn) ? "—" : str.format_time(nextEarn, "yyyy-MM-dd", TZ))
+    row(7, "1トレードの許容損失", str.tostring(math.round(strategy.equity * riskPct / 100)) + "円")
