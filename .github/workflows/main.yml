@@ -664,6 +664,40 @@ jobs:
           ]
 
 
+          # Check data freshness before writing CSV files.
+          today_jst = datetime.now(JST).date()
+          latest_dates = [
+              datetime.fromisoformat(row[0]).date()
+              for row in all_rows
+          ]
+          latest = max(latest_dates) if latest_dates else None
+
+          if latest is None:
+              raise SystemExit("ERROR: No market data")
+
+          weekdays_behind = sum(
+              (latest + timedelta(days=i)).weekday() < 5
+              for i in range(1, (today_jst - latest).days + 1)
+          )
+
+          latest_count = len({
+              row[1] for row in all_rows
+              if row[0] == latest.isoformat()
+          })
+
+          print(
+              f"FRESHNESS CHECK: {latest}, "
+              f"weekdays behind={weekdays_behind}, "
+              f"stocks={latest_count}/100",
+              flush=True
+          )
+
+          if weekdays_behind > 1 or latest_count < 95:
+              raise SystemExit(
+                  "ERROR: Stale or incomplete market data"
+              )
+
+  
           with open(
 
               "prices.csv",
