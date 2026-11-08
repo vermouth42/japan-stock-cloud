@@ -803,7 +803,60 @@ jobs:
 
 
           python update_prices.py
+      - name: Verify complete Japanese market day before saving
+        shell: bash
+        run: |
+          python -m pip -q install "holidays>=0.65,<1"
+          python - <<'PY'
+          import csv
+          import json
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+          import holidays
 
+          now = datetime.now(ZoneInfo("Asia/Tokyo"))
+          expected_day = now.date() if now.hour >= 18 else now.date() - timedelta(days=1)
+          japan_holidays = holidays.country_holidays(
+              "JP", years=[expected_day.year - 1, expected_day.year, expected_day.year + 1]
+          )
+          def market_closed(day):
+              return (day.weekday() >= 5 or day in japan_holidays
+                      or (day.month == 12 and day.day == 31)
+                      or (day.month == 1 and day.day in (2, 3)))
+          while market_closed(expected_day):
+              expected_day -= timedelta(days=1)
+          expected = expected_day.isoformat()
+
+          with open("status.json", encoding="utf-8") as source:
+              status = json.load(source)
+          latest_by_code = {}
+          unique_keys = set()
+          duplicate_keys = 0
+          with open("prices.csv", encoding="utf-8-sig", newline="") as source:
+              for row in csv.DictReader(source):
+                  code, day = row["コード"], row["日付"]
+                  key = (code, day)
+                  if key in unique_keys:
+                      duplicate_keys += 1
+                  unique_keys.add(key)
+                  if day > latest_by_code.get(code, ""):
+                      latest_by_code[code] = day
+
+          valid = (
+              status.get("stocks_total") == 100
+              and status.get("stocks_success") == 100
+              and status.get("stocks_failed") == 0
+              and not status.get("failed")
+              and status.get("latest_market_date") == expected
+              and len(latest_by_code) == 100
+              and all(day == expected for day in latest_by_code.values())
+              and duplicate_keys == 0
+          )
+          print(f"EXPECTED={expected}; ACTUAL={status.get('latest_market_date')}; "
+                f"STOCKS={len(latest_by_code)}; DUPLICATES={duplicate_keys}; VALID={valid}")
+          if not valid:
+              raise SystemExit("STOP: stale or incomplete 100-stock dataset; GitHub unchanged")
+          PY
       - name: Build latest 100-stock snapshot
         shell: bash
         run: |
