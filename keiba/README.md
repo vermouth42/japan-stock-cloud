@@ -83,6 +83,35 @@ connections は市場に既に織り込まれているため単独では寄与�
 4. ケリー基準でも最大ドローダウン 50% 超はあり得ます。資金は失ってよい額に限定してください。
 5. 95% 信頼区間の **下限** が 100% を超えるまでは実弾投入しないのが原則です。
 
+## keiba_app の keiba.db で使う (実データ)
+
+`keiba` フォルダを `C:\Users\naynu\Desktop\keiba_app` にコピーし、そのフォルダで実行します
+(DB には SELECT しか発行しません。長い集計の間は app.py を止めてください)。
+
+```powershell
+python -m keiba dbcheck  --db keiba.db                    # 年別の件数・列の充足率を確認
+python -m keiba backtest --db keiba.db --out bets.csv     # ウォークフォワード検証
+python -m keiba backtest --db keiba.db --slippage 0.05    # オッズ5%悪化を想定
+python -m keiba predict  --db keiba.db --optimize         # 結果未確定レース (出馬表) の買い目
+```
+
+`sqlite_loader.py` が引き継ぎ資料の構造を次のように扱います。
+
+| DB の事情 | 対応 |
+|---|---|
+| `entries.horse_id` が馬名 | 同名馬の混同を避けるため「馬名_生年 (開催年−年齢)」をキーにする |
+| `class` の表記ゆれ ('1勝クラス'/'500万下' 等) | 0〜4 の5段階に正規化。障害は除外 |
+| オッズが信頼できるのは 2021-08-01 以降 | それ以前のオッズは捨てる (`--odds-since`)。古いレースは過去成績の集計と Stage1 学習にだけ使い、賭けの検証は 2022-02 以降 |
+| 読み込み開始日 | 既定 2015-01-01 (`--since`)。さかのぼるほど遅くなる |
+| 取消・除外 (`finish_position` NULL/0) | 結果のあるレースから除外 |
+| `passing_order` '3-3-(2)-*1' | 数字だけ拾い最後のコーナー順位を使用 |
+| 馬体重増減が 2025 年以降のみ | 欠損はレース内平均扱い (0) |
+| 出馬表の単勝オッズ | `entries.odds` が空なら `odds_snapshot` で補う |
+| 資料と実物の列の差 | 無い列は NULL として読む |
+
+注意: `entries.odds` は**確定オッズ**です。`odds_history` (2026-11-07〜蓄積中) がたまれば、
+「購入時点のオッズ→確定オッズ」の悪化幅を実測して `--slippage` に反映できます。
+
 ## 使い方
 
 ```bash

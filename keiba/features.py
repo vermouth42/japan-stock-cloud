@@ -58,8 +58,9 @@ def _prior_ae(df: pd.DataFrame, keys: list[str], actual: str, expected: str,
     市場確率を使えば「市場の評価以上に勝つか (=妙味)」を測れる。
     """
     tmp = df[keys + ["date"]].copy()
-    tmp["_a"] = df[actual].fillna(0.0)
-    tmp["_e"] = df[expected].where(df[actual].notna(), 0.0).fillna(0.0)
+    valid = df[actual].notna() & df[expected].notna()   # オッズ無し期間は市場比 A/E に数えない
+    tmp["_a"] = df[actual].where(valid, 0.0)
+    tmp["_e"] = df[expected].where(valid, 0.0)
     g = tmp.groupby(keys + ["date"], sort=False)[["_a", "_e"]].sum().reset_index()
     g = g.sort_values("date", kind="mergesort")
     cum = g.groupby(keys, sort=False)[["_a", "_e"]].cumsum() - g[["_a", "_e"]]

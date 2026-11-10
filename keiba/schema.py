@@ -72,7 +72,7 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"必須列が不足しています: {missing}")
     df["date"] = pd.to_datetime(df["date"])
     df["surface"] = df["surface"].replace(_SURF)
-    df["going"] = df["going"].replace(_GOING).astype(float)
+    df["going"] = pd.to_numeric(df["going"].replace(_GOING), errors="coerce").fillna(0.0)
     df["sex"] = df["sex"].replace(_SEX)
     if df["race_class"].dtype == object:
         df["race_class"] = df["race_class"].replace(_CLASS)
@@ -85,7 +85,6 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     # 取消・除外・中止 (着順が数値でない過去レース) は除く。未来レース(全頭NaN)は残す
     race_has_result = df.groupby("race_id")["finish_pos"].transform(lambda s: s.notna().any())
     df = df[~(race_has_result & df["finish_pos"].isna())]
-    df = df[df["odds_win"].notna() | ~race_has_result]
     return df.reset_index(drop=True)
 
 

@@ -24,6 +24,9 @@ def walk_forward(df: pd.DataFrame, features: list[str], test_months: int = 6,
     start = df["date"].min().normalize()
     end = df["date"].max()
     t = start + pd.DateOffset(months=min_train_months + calib_months)
+    # オッズのある期間が calib_months 分たまってから賭け始める (それ以前は成績集計と Stage1 学習のみ)
+    odds_start = df.loc[df["odds_win"].notna() & df["finish_pos"].notna(), "date"].min().normalize()
+    t = max(t, odds_start + pd.DateOffset(months=calib_months))
     preds, periods, bets_all = [], [], []
     model = None
     while t <= end:
@@ -32,6 +35,7 @@ def walk_forward(df: pd.DataFrame, features: list[str], test_months: int = 6,
         train = df[df["date"] < c0]
         calib = df[(df["date"] >= c0) & (df["date"] < t)]
         test = df[(df["date"] >= t) & (df["date"] < t_end)]
+        test = test[trainable(test)]
         if len(test) == 0:
             break
         model = TwoStageModel(features, l2=l2).fit(train, calib)
@@ -48,7 +52,7 @@ def walk_forward(df: pd.DataFrame, features: list[str], test_months: int = 6,
         ok = trainable(test).to_numpy()
         y = winner_target(test[ok])
         info = {
-            "period": f"{t.date()}〜{(t_end - pd.Timedelta(days=1)).date()}",
+            "period": f"{t.date()}~{(t_end - pd.Timedelta(days=1)).date()}",
             "races": int(test.loc[ok, "race_id"].nunique()),
             "ll_market": log_loss_winner(pt.loc[ok, "p_mkt"].to_numpy(), y),
             "ll_fund": log_loss_winner(pt.loc[ok, "p_fund"].to_numpy(), y),
@@ -126,7 +130,8 @@ def factor_ablation(df: pd.DataFrame, groups: dict[str, list[str]], train_months
     値が大きいほど「市場に織り込まれていない情報」をそのファクターが持っている。
     """
     start = df["date"].min().normalize()
-    c0 = start + pd.DateOffset(months=train_months)
+    odds_start = df.loc[df["odds_win"].notna() & df["finish_pos"].notna(), "date"].min().normalize()
+    c0 = max(start + pd.DateOffset(months=train_months), odds_start)
     t0 = c0 + pd.DateOffset(months=calib_months)
     t1 = t0 + pd.DateOffset(months=test_months)
     train, calib = df[df["date"] < c0], df[(df["date"] >= c0) & (df["date"] < t0)]

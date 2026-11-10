@@ -3,11 +3,17 @@
   python -m keiba demo                         合成データで全工程を実演
   python -m keiba backtest --data races.csv    実データでウォークフォワード検証
   python -m keiba predict --data races.csv --card card.csv   出馬表の買い目を出力
+
+keiba_app の SQLite を直接使う場合 (keiba.db のあるフォルダで実行):
+  python -m keiba dbcheck  --db keiba.db       年別の件数・列の充足率
+  python -m keiba backtest --db keiba.db       検証 (賭けるのはオッズのそろう 2021-08 以降)
+  python -m keiba predict  --db keiba.db       結果未確定レース (出馬表) の買い目
 """
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 import pandas as pd
 
@@ -27,7 +33,7 @@ def _report(per, bets, preds, model, ablation=None):
     if s["bets"]:
         lo, hi = s["roi_ci95"]
         print(f"的中率                : {s['hit_rate']:.3f}")
-        print(f"均等買い ROI          : {s['roi_flat']:.3f}  (95%CI {lo:.3f}〜{hi:.3f})")
+        print(f"均等買い ROI          : {s['roi_flat']:.3f}  (95%CI {lo:.3f}~{hi:.3f})")
         print(f"1/4ケリー 資金倍率    : {s['kelly_final_multiple']:.2f}x  最大DD {s['kelly_max_drawdown']:.1%}")
         print("\nオッズ帯別:")
         print(s["by_odds"].round(3).to_string())
@@ -47,7 +53,7 @@ def cmd_backtest(df, args):
     abl = None if args.no_ablation else factor_ablation(F, FEATURE_GROUPS)
     _report(per, bets, preds, model, abl)
     if args.out:
-        bets.to_csv(args.out, index=False)
+        bets.to_csv(args.out, index=False, encoding="utf-8-sig")
         print(f"\n買い目明細 -> {args.out}")
 
 
@@ -59,44 +65,79 @@ def cmd_demo(args):
     cmd_backtest(df, args)
 
 
+def _load(args, include_future=False):
+    if args.db:
+        from .sqlite_loader import load_db
+        return load_db(args.db, since=args.since, odds_since=args.odds_since,
+                       include_future=include_future)
+    if not args.data:
+        sys.exit("--data か --db のどちらかを指定してください")
+    return load_csv(args.data)
+
+
 def cmd_predict(args):
-    hist = load_csv(args.data)
-    card = normalize(pd.read_csv(args.card))
-    allr = pd.concat([hist, card], ignore_index=True)
+    allr = _load(args, include_future=True)
+    if args.card:
+        allr = pd.concat([allr, normalize(pd.read_csv(args.card))], ignore_index=True)
     F, cols = build_features(allr)
+    future = ~F["finish_pos"].notna().groupby(F["race_id"]).transform("any")
+    if args.date:
+        future &= F["date"] == pd.Timestamp(args.date)
+    card = F[future]
+    if card.empty:
+        sys.exit("予測対象 (結果未確定) のレースがありません")
+    if card["odds_win"].isna().all():
+        sys.exit("対象レースにオッズがありません (odds_snapshot 取得後に実行してください)")
     cut = card["date"].min()
-    past = F[F["date"] < cut]
-    c0 = cut - pd.DateOffset(months=6)
+    past = F[(F["date"] < cut) & ~future]
+    c0 = cut - pd.DateOffset(months=args.calib_months)
     model = TwoStageModel(cols).fit(past[past["date"] < c0], past[past["date"] >= c0])
     strat = Strategy(slippage=args.slippage)
     if args.optimize:
-        strat, _ = optimize_strategy(model.predict(past[past["date"] >= c0]), strat)
-    pred = model.predict(F[F["race_id"].isin(card["race_id"])])
+        strat, _ = optimize_strategy(model.predict(past[past["date"] >= c0]).dropna(subset=["p"]), strat)
+    pred = model.predict(card)
+    if "horse_name" in card:
+        pred["horse"] = card["horse_name"]
     bets = select_bets(pred, strat)
     pd.set_option("display.width", 200)
+    pd.set_option("display.unicode.east_asian_width", True)
     print("戦略:", json.dumps(strat.to_dict(), ensure_ascii=False))
-    cols_out = ["race_id", "horse_no", "odds_win", "p_mkt", "p_fund", "p", "ev"]
+    cols_out = ["race_id", "horse_no"] + (["horse"] if "horse" in pred else []) + \
+        ["odds_win", "p_mkt", "p_fund", "p", "ev"]
     print(pred[cols_out].sort_values(["race_id", "p"], ascending=[True, False]).round(3).to_string(index=False))
     print("\n=== 買い目 (kelly = 資金に対する賭け比率) ===")
     print(bets[cols_out + ["kelly"]].round(4).to_string(index=False) if len(bets) else "該当なし (見送り)")
 
 
 def main():
+    for s in (sys.stdout, sys.stderr):      # Windows (cp932) でも落ちないように
+        try:
+            s.reconfigure(errors="replace")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(prog="keiba")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("demo"); d.add_argument("--years", type=int, default=6); d.add_argument("--seed", type=int, default=1)
-    b = sub.add_parser("backtest"); b.add_argument("--data", required=True)
-    for p in (d, b):
-        p.add_argument("--slippage", type=float, default=0.0)
-        p.add_argument("--no-ablation", action="store_true")
-        p.add_argument("--out")
-    p = sub.add_parser("predict"); p.add_argument("--data", required=True); p.add_argument("--card", required=True)
-    p.add_argument("--slippage", type=float, default=0.0); p.add_argument("--optimize", action="store_true")
+    b = sub.add_parser("backtest")
+    p = sub.add_parser("predict"); p.add_argument("--card"); p.add_argument("--date")
+    p.add_argument("--optimize", action="store_true"); p.add_argument("--calib-months", type=int, default=12)
+    c = sub.add_parser("dbcheck"); c.add_argument("--db", default="keiba.db")
+    for x in (b, p):
+        x.add_argument("--data"); x.add_argument("--db")
+        x.add_argument("--since", default="2015-01-01", help="DB から読む開始日 (過去成績の集計用)")
+        x.add_argument("--odds-since", default="2021-08-01", help="この日以降のオッズだけ使う")
+    for x in (d, b):
+        x.add_argument("--no-ablation", action="store_true"); x.add_argument("--out")
+    for x in (d, b, p):
+        x.add_argument("--slippage", type=float, default=0.0)
     a = ap.parse_args()
     if a.cmd == "demo":
         cmd_demo(a)
     elif a.cmd == "backtest":
-        cmd_backtest(load_csv(a.data), a)
+        cmd_backtest(_load(a), a)
+    elif a.cmd == "dbcheck":
+        from .sqlite_loader import db_check
+        print(db_check(a.db))
     else:
         cmd_predict(a)
 

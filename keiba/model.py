@@ -91,9 +91,13 @@ def winner_target(df: pd.DataFrame) -> np.ndarray:
     return (w / n.replace(0, np.nan)).fillna(0).to_numpy()
 
 
-def trainable(df: pd.DataFrame) -> pd.Series:
+def trainable(df: pd.DataFrame, need_odds: bool = True) -> pd.Series:
+    """学習・評価に使える行。need_odds=False ならオッズの無い時代のレースも可 (Stage1 用)。"""
     has_winner = (df["finish_pos"] == 1).groupby(df["race_id"]).transform("any")
-    return has_winner & (df["field_size"] >= 5) & df["odds_win"].notna()
+    ok = has_winner & (df["field_size"] >= 5)
+    if need_odds:
+        ok &= df["odds_win"].notna().groupby(df["race_id"]).transform("all")
+    return ok
 
 
 def log_loss_winner(p: np.ndarray, y: np.ndarray) -> float:
@@ -111,7 +115,7 @@ class TwoStageModel:
         self.stage2 = ConditionalLogit(l2=1e-3)
 
     def fit(self, train: pd.DataFrame, calib: pd.DataFrame) -> "TwoStageModel":
-        tr = train[trainable(train)]
+        tr = train[trainable(train, need_odds=False)]
         self.stage1.fit(tr[self.features].to_numpy(), winner_target(tr), tr["race_id"].to_numpy())
         ca = calib[trainable(calib)]
         Z2 = self._stage2_X(ca)
