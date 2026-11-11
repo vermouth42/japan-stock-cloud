@@ -1,0 +1,47 @@
+//@version=6
+strategy("CLOUD-LITE v6 | 技術条件のみ・実戦成績ではない", overlay = true, initial_capital = 1000000, currency = currency.JPY, pyramiding = 0, default_qty_type = strategy.fixed, commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 2, margin_long = 100, margin_short = 100, process_orders_on_close = false, calc_on_order_fills = false, calc_on_every_tick = false)
+
+// Isolated SWING research baseline. No live rank/event/board history is assumed.
+// Cost defaults are stress assumptions, NOT a statement of SBI fees.
+// No alert() and all simulated order alerts disabled. Do not connect to a broker.
+enabled = input.bool(false, "技術条件のみの参考検証を有効化")
+startAt = input.time(timestamp("01 Jan 2020 00:00 +0900"), "検証開始")
+endAt = input.time(timestamp("01 Jan 2026 00:00 +0900"), "検証終了（この時刻未満）")
+riskPct = input.float(0.5, "1取引リスク（%・研究用）", minval = 0.1, maxval = 3)
+positionPct = input.float(25, "1銘柄投資額上限（%）", minval = 1, maxval = 100)
+atrMultiple = input.float(2, "損切りATR倍率", minval = 0.5)
+rewardR = input.float(2, "利確R倍率", minval = 0.5)
+useEma = input.bool(false, "追加実験：EMA20")
+useRsi = input.bool(false, "追加実験：RSI50〜70")
+useMa200 = input.bool(false, "追加実験：200日線")
+useVolume = input.bool(false, "追加実験：前25日平均の1.5倍出来高")
+
+if barstate.isfirst and (not chart.is_standard or not timeframe.isdaily or timeframe.multiplier != 1 or syminfo.currency != "JPY" or syminfo.prefix != "TSE")
+    runtime.error("標準ローソク足・東証・日本円・1日足で検証してください")
+
+atr = ta.atr(14)
+ema = ta.ema(close, 20)
+rsi = ta.rsi(close, 14)
+ma200 = ta.sma(close, 200)
+volAvg = ta.sma(volume, 25)[1]
+priorHigh = ta.highest(high, 20)[1]
+breakout = ta.crossover(close, priorHigh)
+filterOk = (not useEma or close > ema) and (not useRsi or (rsi >= 50 and rsi <= 70)) and (not useMa200 or (not na(ma200) and close > ma200)) and (not useVolume or (not na(volAvg) and volAvg > 0 and volume >= volAvg * 1.5))
+// Next-bar market fill can gap: sizing is an estimate at signal close, not a loss guarantee.
+stopTicks = math.max(1, math.ceil(atr * atrMultiple / syminfo.mintick))
+estimatedRisk = (stopTicks + 4) * syminfo.mintick + close * 0.001
+byRisk = estimatedRisk > 0 ? strategy.equity * riskPct / 100 / estimatedRisk : 0
+byCash = close > 0 ? strategy.equity * positionPct / 100 / (close * 1.0005 + 2 * syminfo.mintick) : 0
+qty = math.floor(math.min(byRisk, byCash) / 100) * 100
+if enabled and barstate.isconfirmed and time >= startAt and time_close < endAt and strategy.position_size == 0 and breakout and filterOk and not na(atr) and qty >= 100
+    strategy.entry("ResearchLong", strategy.long, qty = qty, disable_alert = true)
+    // Relative levels use actual simulated entry price; bracket exists from entry.
+    strategy.exit("ResearchBracket", "ResearchLong", loss = stopTicks, profit = math.ceil(stopTicks * rewardR), disable_alert = true)
+if time_close >= endAt
+    strategy.cancel_all()
+    strategy.close_all(comment = "検証期間終了", immediately = true, disable_alert = true)
+plot(ema, "EMA20", color = color.orange)
+plot(useMa200 ? ma200 : na, "MA200", color = color.blue)
+var table warning = table.new(position.top_right, 1, 1)
+if barstate.islast
+    table.cell(warning, 0, 0, "研究用：A/A+・VWAP・イベント・板の履歴なし\n正式成績/10倍到達確率に使用禁止", bgcolor = color.orange, text_color = color.black)
