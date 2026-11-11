@@ -60,6 +60,7 @@ function astraInvalidateRow_(sheet, row, properties) {
 
 function handleSbiV77Edit(e) {
   if (!e || !e.range) return;
+  if (typeof astraHandleFinalEdit_ === 'function') astraHandleFinalEdit_(e);
   const sheet = e.range.getSheet();
   if (sheet.getName() !== SBI_V77_SHEET) return;
   const first = Math.max(4, e.range.getRow());
@@ -119,5 +120,6 @@ function resetSbiV77Daily() {
     const properties = PropertiesService.getDocumentProperties();
     Object.keys(properties.getProperties()).filter(k => k.startsWith(ASTRA_RECEIPT_PREFIX))
       .forEach(k => properties.deleteProperty(k));
+    if (typeof astraResetFinal_ === 'function') astraResetFinal_();
   } finally { lock.releaseLock(); }
 }
