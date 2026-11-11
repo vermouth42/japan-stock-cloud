@@ -168,8 +168,13 @@ function astraFetchAudit_(ss, now) {
   astraRequire_(responses.every(r=>r.getResponseCode()===200),'市場データ取得失敗');
   const text=responses[0].getContentText('UTF-8'), after=JSON.parse(responses[1].getContentText('UTF-8'));
   astraRequire_(JSON.stringify(status)===JSON.stringify(after),'取得中に市場データ更新');
-  const digest=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,text,Utilities.Charset.UTF_8)
+  // Some HTTP transports omit the UTF-8 BOM. Accept only bytes that match the
+  // committed manifest exactly, optionally restoring that three-byte prefix.
+  const bytes=responses[0].getContent();
+  const sha=bs=>Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,bs)
     .map(b=>(b<0?b+256:b).toString(16).padStart(2,'0')).join('');
+  let digest=sha(bytes);
+  if(digest!==status.prices_sha256 && !/^\uFEFF/.test(text)) digest=sha([-17,-69,-65].concat(bytes));
   astraRequire_(digest===status.prices_sha256,'CSVハッシュ不一致');
   const rows=Utilities.parseCsv(text.replace(/^\uFEFF/,''));
   astraRequire_(JSON.stringify(rows.shift())===JSON.stringify(ASTRA_GATE_HEADER),'CSVヘッダー不一致');
