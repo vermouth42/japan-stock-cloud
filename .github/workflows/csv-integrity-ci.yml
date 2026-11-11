@@ -1,0 +1,24 @@
+name: CSV integrity checks
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/main.yml'
+      - '.github/workflows/csv-integrity-ci.yml'
+      - 'tests/test_csv_manifest.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  csv-integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify actual CSV bytes and failure handling
+        run: python -m unittest discover -s tests -p test_csv_manifest.py -v

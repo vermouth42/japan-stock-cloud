@@ -935,6 +935,19 @@ jobs:
           )
 
           PYTHON
+      - name: Bind status to exact CSV contents
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          import hashlib
+          import json
+          from pathlib import Path
+          status_path = Path("status.json")
+          status = json.loads(status_path.read_text(encoding="utf-8"))
+          status["prices_sha256"] = hashlib.sha256(Path("prices.csv").read_bytes()).hexdigest()
+          status_path.write_text(json.dumps(status, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PYTHON
+
       - name: Save prices to GitHub
         shell: bash
         run: |
