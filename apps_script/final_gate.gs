@@ -158,23 +158,25 @@ function astraReadFinalState_(ss) {
     events:ev.getValues(),eventDisplay:eventCells.join('␞'),holidays:holidayDates};
 }
 function astraFetchAudit_(ss, now) {
-  function fetchJson(url) {
-    const response=UrlFetchApp.fetch(url,{muteHttpExceptions:true});
-    astraRequire_(response.getResponseCode()===200,'市場データ取得失敗');
-    return JSON.parse(response.getContentText('UTF-8'));
-  }
-  const commit=fetchJson('https://api.github.com/repos/vermouth42/japan-stock-cloud/commits/main');
-  astraRequire_(typeof commit.sha==='string'&&/^[a-f0-9]{40}$/.test(commit.sha),'取得元の版不明');
-  const base='https://raw.githubusercontent.com/vermouth42/japan-stock-cloud/'+commit.sha+'/';
-  const responses=UrlFetchApp.fetchAll(['status.json','prices.csv'].map(p=>({url:base+p,muteHttpExceptions:true})));
+  const base='https://raw.githubusercontent.com/vermouth42/japan-stock-cloud/main/';
+  const nonce='?cacheBust='+Date.now();
+  const first=UrlFetchApp.fetch(base+'status.json'+nonce,{muteHttpExceptions:true});
+  astraRequire_(first.getResponseCode()===200,'市場データ取得失敗HTTP'+first.getResponseCode());
+  const status=JSON.parse(first.getContentText('UTF-8'));
+  astraRequire_(typeof status.prices_sha256==='string'&&/^[a-f0-9]{64}$/.test(status.prices_sha256),'取得元ハッシュなし');
+  const responses=UrlFetchApp.fetchAll(['prices.csv','status.json'].map(p=>({url:base+p+nonce,muteHttpExceptions:true})));
   astraRequire_(responses.every(r=>r.getResponseCode()===200),'市場データ取得失敗');
-  const status=JSON.parse(responses[0].getContentText('UTF-8'));
-  const rows=Utilities.parseCsv(responses[1].getContentText('UTF-8').replace(/^\uFEFF/,''));
+  const text=responses[0].getContentText('UTF-8'), after=JSON.parse(responses[1].getContentText('UTF-8'));
+  astraRequire_(JSON.stringify(status)===JSON.stringify(after),'取得中に市場データ更新');
+  const digest=Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,text,Utilities.Charset.UTF_8)
+    .map(b=>(b<0?b+256:b).toString(16).padStart(2,'0')).join('');
+  astraRequire_(digest===status.prices_sha256,'CSVハッシュ不一致');
+  const rows=Utilities.parseCsv(text.replace(/^\uFEFF/,''));
   astraRequire_(JSON.stringify(rows.shift())===JSON.stringify(ASTRA_GATE_HEADER),'CSVヘッダー不一致');
   if(rows.length&&rows[rows.length-1].length===1&&rows[rows.length-1][0]==='')rows.pop();
   const imported=ss.getSheetByName('株価データ取込').getRange('A3:R4502').getValues();
   const audit=astraAuditRows_(status,rows,imported,now);
-  return {...audit,commit:commit.sha,content_hash:astraHash_(imported)};
+  return {...audit,source_hash:digest,content_hash:astraHash_(imported)};
 }
 // Optional editor diagnostic: read-only, no approval record or GO output.
 function verifyFinalMarketData() {
@@ -255,7 +257,7 @@ function astraHandleFinalEdit_(e) {
     decision.is_copy=ss.getId()!==ASTRA_FINAL_BOOKS[0];
     props.setProperty(ASTRA_FINAL_PREFIX+'receipt',JSON.stringify({...decision,audit,state_hash:astraHash_(state)}));
     form.getRange('B35:B40').setValues([[new Date(decision.at)],[new Date(decision.expires)],
-      [decision.shares],[audit.commit],[audit.market_date],['100銘柄・4500行・全18列一致']]);
+      [decision.shares],[audit.source_hash],[audit.market_date],['100銘柄・4500行・全18列一致']]);
     form.getRange('B34').setValue(true);
     form.getRange('B26').setFormula(astraGuardFormula_(state,decision));
     SpreadsheetApp.flush();
