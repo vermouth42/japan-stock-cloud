@@ -2,7 +2,7 @@
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const ctx=vm.createContext({Date,Number,String,Object,Array,JSON,Math,Set,Map,Error,
  Utilities:{DigestAlgorithm:{SHA_256:'sha256'},Charset:{UTF_8:'utf8'},
- computeDigest:(_,s)=>Array.from(crypto.createHash('sha256').update(s).digest()),getUuid:()=>crypto.randomUUID()}});
+ computeDigest:(_,s)=>Array.from(crypto.createHash('sha256').update(typeof s==='string'?s:Buffer.from(s)).digest()),getUuid:()=>crypto.randomUUID()}});
 for(const p of ['sbi_receipt.gs','final_gate_config.gs','final_gate.gs'])vm.runInContext(fs.readFileSync('apps_script/'+p,'utf8'),ctx);
 const codes=JSON.parse(fs.readFileSync('astra/watchlist.json'));
 const now=Date.parse('2026-11-11T10:05:00+09:00');
@@ -110,7 +110,7 @@ const nativeFixture=dataFixture();
 function rawSourceText(){return '\uFEFF'+[JSON.parse(vm.runInContext('JSON.stringify(ASTRA_GATE_HEADER)',ctx)),...nativeFixture.raw].map(r=>r.join(',')).join('\n');}
 function sourceStatus(){return {...nativeFixture.status,prices_sha256:crypto.createHash('sha256').update(rawSourceText()).digest('hex')};}
 let sourceFault='';
-ctx.UrlFetchApp={fetch:()=>({getResponseCode:()=>httpCode,getContentText:()=>JSON.stringify(sourceFault==='missing-hash'?nativeFixture.status:sourceStatus())}),fetchAll:()=>{fetchHook();return [0,1].map(i=>({getResponseCode:()=>httpCode,getContentText:()=>i===0?rawSourceText()+(sourceFault==='changed-csv'?'\n':''):JSON.stringify({...sourceStatus(),...(sourceFault==='changed-status'?{rows:1}:{})})}));}};
+ctx.UrlFetchApp={fetch:()=>({getResponseCode:()=>httpCode,getContentText:()=>JSON.stringify(sourceFault==='missing-hash'?nativeFixture.status:sourceStatus())}),fetchAll:()=>{fetchHook();return [0,1].map(i=>({getResponseCode:()=>httpCode,getContent:()=>Array.from(Buffer.from(rawSourceText().replace(/^\uFEFF/,'')+(sourceFault==='changed-csv'?'\n':''))),getContentText:()=>i===0?rawSourceText().replace(/^\uFEFF/,'')+(sourceFault==='changed-csv'?'\n':''):JSON.stringify({...sourceStatus(),...(sourceFault==='changed-status'?{rows:1}:{})})}));}};
 ctx.Utilities.parseCsv=s=>s.split('\n').map(r=>r.split(','));
 function setupNative(){
  const f=fixture();docLock=scriptLock=true;httpCode=200;sourceFault='';fetchHook=()=>{};store={};
