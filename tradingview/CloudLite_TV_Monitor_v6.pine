@@ -1,0 +1,97 @@
+//@version=6
+indicator("CLOUD-LITE | TV自動技術監視 v6・GO判定なし", overlay = true)
+
+// Human-readable TradingView chart/app alerts only. No broker orders/webhook feed.
+// This monitor has no Sheets A/A+ rank, order book, events, or SBI account state.
+// It never identifies a technical observation as BUY, a held position, or GO.
+// Existing candidate/research scripts and their alerts are not replaced.
+const string TZ = "Asia/Tokyo"
+notify = input.bool(false, "技術観測のアプリ通知を有効化（売買GOではありません）")
+notifyWeakness = input.bool(true, "VWAP下抜けも通知（保有判定なし）")
+breakLen = input.int(20, "過去高値の本数", minval = 2)
+volLen = input.int(20, "出来高基準の本数", minval = 2)
+volMultiple = input.float(1.5, "出来高倍率", minval = 1)
+wickMax = input.float(0.3, "上ヒゲ/値幅 上限", minval = 0, maxval = 1)
+gapMax = input.float(3, "始値ギャップ絶対値 上限（%）", minval = 0)
+cooldownMinutes = input.int(15, "同種通知の間隔（分）", minval = 5)
+dailyLimit = input.int(3, "各種類の1日通知上限", minval = 1, maxval = 5)
+maxBarAgeSeconds = input.int(90, "足確定からの通知遅延上限（秒）", minval = 10, maxval = 120)
+
+supported = chart.is_standard and syminfo.prefix == "TSE" and syminfo.currency == "JPY" and timeframe.isminutes and (timeframe.multiplier == 1 or timeframe.multiplier == 5)
+inSession = not na(time(timeframe.period, "0905-1125,1230-1455:23456", TZ))
+newDay = timeframe.change("1D")
+firstSessionBar = hour(time, TZ) == 9 and minute(time, TZ) == 0
+var float sessionOpen = na
+if newDay
+    sessionOpen := na
+if firstSessionBar
+    sessionOpen := open
+vwapValue = ta.vwap(hlc3, newDay)
+[prevClose, ma200] = request.security(syminfo.tickerid, "1D", [close[1], ta.sma(close, 200)[1]], lookahead = barmerge.lookahead_on)
+sma20 = ta.sma(close, 20)
+ema20 = ta.ema(close, 20)
+rsi14 = ta.rsi(close, 14)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+atr14 = ta.atr(14)
+[bbMid, bbUpper, bbLower] = ta.bb(close, 20, 2)
+obvValue = ta.obv
+pastHigh = ta.highest(high, breakLen)[1]
+volBase = ta.sma(volume, volLen)[1]
+volumeRatio = volBase > 0 ? volume / volBase : na
+gap = not na(sessionOpen) and prevClose > 0 ? 100 * (sessionOpen / prevClose - 1) : na
+wick = high > low ? (high - math.max(open, close)) / (high - low) : na
+crossHigh = ta.crossover(close, pastHigh)
+crossVwapDown = ta.crossunder(close, vwapValue)
+volumeContinues = volumeRatio >= volMultiple and volume[1] >= volBase[1]
+dataReady = supported and not na(sessionOpen) and not na(vwapValue) and not na(pastHigh) and not na(gap) and not na(wick) and not na(volBase[1]) and volume > 0
+technicalObservation = dataReady and inSession and close >= vwapValue and crossHigh and volumeContinues and wick <= wickMax and math.abs(gap) <= gapMax
+weaknessObservation = dataReady and inSession and crossVwapDown
+// Closing-bar timestamp is explicit. This is not a broker quote or an entitlement check.
+barAge = timenow - time_close
+freshClose = barAge >= 0 and barAge <= maxBarAgeSeconds * 1000
+var int lastTechnicalAt = na
+var int lastWeaknessAt = na
+var int technicalCount = 0
+var int weaknessCount = 0
+if newDay
+    lastTechnicalAt := na
+    lastWeaknessAt := na
+    technicalCount := 0
+    weaknessCount := 0
+canNotify = notify and barstate.isrealtime and barstate.isconfirmed and freshClose
+technicalDue = technicalObservation and technicalCount < dailyLimit and (na(lastTechnicalAt) or time_close - lastTechnicalAt >= cooldownMinutes * 60000)
+weaknessDue = weaknessObservation and notifyWeakness and weaknessCount < dailyLimit and (na(lastWeaknessAt) or time_close - lastWeaknessAt >= cooldownMinutes * 60000)
+message(string kind) =>
+    "【技術観測・GO禁止】" + kind + " | " + syminfo.tickerid + " | " + timeframe.period + "分足確定 " + str.format_time(time_close, "yyyy-MM-dd HH:mm", TZ) + " JST | 終値=" + str.tostring(close, format.mintick) + " | TV VWAP=" + str.tostring(vwapValue, format.mintick) + " | A/A+・イベント・板・保有・余力は未照合。売買や利確の指示ではありません。"
+if canNotify and technicalDue
+    alert(message("過去高値突破＋出来高継続"), alert.freq_once_per_bar_close)
+    lastTechnicalAt := time_close
+    technicalCount += 1
+if canNotify and weaknessDue
+    alert(message("VWAP下抜け・保有判定なし"), alert.freq_once_per_bar_close)
+    lastWeaknessAt := time_close
+    weaknessCount += 1
+
+plot(vwapValue, "当日VWAP（TV・hlc3）", color = color.purple, linewidth = 2)
+plot(ema20, "EMA20", color = color.orange)
+plot(pastHigh, "過去高値（現在足を除く）", color = color.new(color.blue, 45), style = plot.style_linebr)
+plot(sma20, "SMA20", display = display.data_window)
+plot(ma200, "前日確定200日線", display = display.data_window)
+plot(rsi14, "RSI14", display = display.data_window)
+plot(macdLine, "MACD", display = display.data_window)
+plot(macdSignal, "MACD signal", display = display.data_window)
+plot(macdHist, "MACD histogram", display = display.data_window)
+plot(atr14, "ATR14", display = display.data_window)
+plot(bbUpper, "BB upper", display = display.data_window)
+plot(bbLower, "BB lower", display = display.data_window)
+plot(obvValue, "OBV", display = display.data_window)
+plot(volumeRatio, "出来高倍率", display = display.data_window)
+plot(gap, "始値ギャップ%", display = display.data_window)
+plot(wick, "上ヒゲ比率", display = display.data_window)
+plotshape(technicalObservation and barstate.isconfirmed, title = "技術観測（売買GOではない）", style = shape.triangleup, location = location.belowbar, color = color.orange, size = size.tiny, text = "観測")
+var table panel = table.new(position.top_right, 1, 4)
+if barstate.islast
+    table.cell(panel, 0, 0, "TradingView価格で自動監視 / SBIは手動注文", bgcolor = color.navy, text_color = color.white)
+    table.cell(panel, 0, 1, supported ? "日付・SBI価格の毎回入力なし" : "標準TSE 1分/5分足のみ対応")
+    table.cell(panel, 0, 2, "A/A+・イベント・板・口座未連携：GO禁止", bgcolor = color.orange, text_color = color.black)
+    table.cell(panel, 0, 3, notify ? "技術通知ON（別途アラート作成が必要）" : "技術通知OFF（検証中）")
