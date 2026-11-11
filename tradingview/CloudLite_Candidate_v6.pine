@@ -1,0 +1,72 @@
+//@version=6
+indicator("CLOUD-LITE v6 | 検証用候補通知・GO判定なし", overlay = true)
+
+// Development only. No Sheets/API/board access. No automated orders.
+// Recreate the alert after changing ANY input: server alerts retain a snapshot.
+const string TZ = "Asia/Tokyo"
+enabled = input.bool(false, "検証用通知を有効化")
+approvedSymbol = input.symbol("TSE:7011", "シートで確認した銘柄")
+rank = input.string("未確認", "Ver.7.5 BUY判定", options = ["未確認", "A+", "A", "B", "C"])
+validDate = input.time(0, "BUY判定の確認日（JST・毎日更新）")
+sheetQty = input.int(0, "シート推奨株数", minval = 0, step = 100)
+availableCash = input.float(0, "新規買付に使える現金（円）", minval = 0)
+lossBudget = input.float(0, "この取引の許容損失（円）", minval = 0)
+stopPrice = input.float(0, "事前に決めた損切り（円）", minval = 0)
+costReserve = input.float(0, "1株あたり往復コスト余裕（円）", minval = 0)
+eventClear = input.bool(false, "重要イベントを確認済み・3営業日以内なし")
+entrySession = input.session("0905-1125,1230-1455", "候補通知時間（JST）")
+breakLen = input.int(20, "ブレイク判定本数", minval = 2)
+volLen = input.int(20, "出来高比較本数", minval = 2)
+volMultiple = input.float(1.5, "出来高倍率", minval = 1)
+wickMax = input.float(0.3, "上ヒゲ/値幅の上限", minval = 0, maxval = 1)
+gapMax = input.float(3, "寄付きギャップ絶対値上限（%）", minval = 0)
+useEma = input.bool(false, "研究用：EMAフィルター")
+useRsi = input.bool(false, "研究用：RSIフィルター")
+use200 = input.bool(false, "研究用：前日確定200日線フィルター")
+
+sameDay(int a, int b) =>
+    year(a, TZ) == year(b, TZ) and month(a, TZ) == month(b, TZ) and dayofmonth(a, TZ) == dayofmonth(b, TZ)
+
+// Basic version supports standard TSE 1/5-minute charts only.
+supported = chart.is_standard and syminfo.prefix == "TSE" and syminfo.currency == "JPY" and timeframe.isminutes and (timeframe.multiplier == 1 or timeframe.multiplier == 5)
+inSession = not na(time(timeframe.period, entrySession, TZ))
+newDay = timeframe.change("1D")
+vwapValue = ta.vwap(hlc3, newDay)
+ema20 = ta.ema(close, 20)
+rsi14 = ta.rsi(close, 14)
+atr14 = ta.atr(14)
+previousHigh = ta.highest(high, breakLen)[1]
+volBase = ta.sma(volume, volLen)[1]
+// All HTF values are previous confirmed bars; never use unshifted lookahead_on.
+[prevClose, prevMa200] = request.security(syminfo.tickerid, "1D", [close[1], ta.sma(close, 200)[1]], lookahead = barmerge.lookahead_on)
+var float sessionOpen = na
+if newDay
+    sessionOpen := hour(time, TZ) == 9 and minute(time, TZ) == 0 ? open : na
+gap = not na(sessionOpen) and prevClose > 0 ? 100 * (sessionOpen / prevClose - 1) : na
+wick = high > low ? (high - math.max(open, close)) / (high - low) : na
+crossed = ta.crossover(close, previousHigh)
+volumeOk = not na(volBase) and volBase > 0 and volume >= volBase * volMultiple and volume[1] >= volBase
+technical = not na(vwapValue) and close >= vwapValue and crossed and volumeOk and not na(wick) and wick <= wickMax and not na(gap) and math.abs(gap) <= gapMax
+filters = (not useEma or close >= ema20) and (not useRsi or (rsi14 >= 50 and rsi14 <= 70)) and (not use200 or (not na(prevMa200) and prevClose >= prevMa200))
+riskPerShare = close - stopPrice + costReserve
+qtyByRisk = stopPrice > 0 and stopPrice < close and riskPerShare > 0 ? math.floor(lossBudget / riskPerShare / 100) * 100 : 0
+qtyByCash = close > 0 ? math.floor(availableCash / (close + costReserve) / 100) * 100 : 0
+candidateQty = math.min(math.floor(sheetQty / 100) * 100, math.min(qtyByRisk, qtyByCash))
+rankOk = rank == "A" or rank == "A+"
+currentSnapshot = validDate > 0 and validDate <= timenow and sameDay(validDate, timenow) and sameDay(time, timenow)
+candidate = enabled and supported and syminfo.tickerid == approvedSymbol and currentSnapshot and rankOk and eventClear and candidateQty >= 100 and inSession and technical and filters and barstate.isconfirmed and barstate.isrealtime
+
+plot(vwapValue, "当日VWAP（TradingView）", color = color.purple, linewidth = 2)
+plot(ema20, "EMA20", color = color.orange)
+plot(stopPrice > 0 ? stopPrice : na, "入力損切り", color = color.red, style = plot.style_linebr)
+plot(rsi14, "RSI14", display = display.data_window)
+plot(atr14, "ATR14（Wilder）", display = display.data_window)
+plotshape(candidate, title = "SBI確認候補", style = shape.triangleup, location = location.belowbar, color = color.orange, size = size.small, text = "確認")
+if candidate
+    alert("TECHNICAL_CANDIDATE | GO=false | " + syminfo.tickerid + " | BUY=" + rank + " | 株数上限=" + str.tostring(candidateQty) + " | 価格=" + str.tostring(close, format.mintick) + " | 損切り=" + str.tostring(stopPrice, format.mintick) + " | SBI当日VWAP・板・鮮度・残余リスクを再確認。自動発注なし", alert.freq_once_per_bar_close)
+
+var table panel = table.new(position.top_right, 1, 3)
+if barstate.islast
+    table.cell(panel, 0, 0, "開発版：GO判定なし", bgcolor = color.orange, text_color = color.black)
+    table.cell(panel, 0, 1, supported ? "1/5分足・候補通知のみ" : "標準TSE 1/5分足のみ対応")
+    table.cell(panel, 0, 2, currentSnapshot and rankOk ? "BUY=" + rank + " / 株数上限 " + str.tostring(candidateQty) : "日付またはA/A+未確認：通知停止")
