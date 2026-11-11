@@ -1,0 +1,23 @@
+{
+  "symbol": "",
+  "rank_symbol": "",
+  "sbi_symbol": "",
+  "rank": "未確認",
+  "rank_checked_at": null,
+  "sbi_checked_at": null,
+  "event_checked_at": null,
+  "event_business_days": null,
+  "event_evidence": "",
+  "current_price": 0,
+  "vwap": 0,
+  "stop": 0,
+  "allowed_loss": 0,
+  "remaining_risk_budget": 0,
+  "available_cash": 0,
+  "recommended_shares": 0,
+  "cost_per_share": 0,
+  "volume_ok": false,
+  "wick_ok": false,
+  "gap_ok": false,
+  "board_ok": false
+}
