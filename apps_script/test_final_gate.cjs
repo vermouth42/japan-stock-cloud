@@ -107,10 +107,13 @@ ctx.PropertiesService={getDocumentProperties:()=>props};
 ctx.LockService={getDocumentLock:()=>({tryLock:()=>docLock,releaseLock:()=>{}}),getScriptLock:()=>({tryLock:()=>scriptLock,hasLock:()=>scriptLock,releaseLock:()=>{}})};
 ctx.SpreadsheetApp={flush:()=>{},getActiveSpreadsheet:()=>book};
 const nativeFixture=dataFixture();
-ctx.UrlFetchApp={fetch:()=>({getResponseCode:()=>httpCode,getContentText:()=>JSON.stringify({sha:'a'.repeat(40)})}),fetchAll:()=>{fetchHook();return [nativeFixture.status,[JSON.parse(fs.readFileSync('astra/watchlist.json')).length]].map((_,i)=>({getResponseCode:()=>httpCode,getContentText:()=>i===0?JSON.stringify(nativeFixture.status):[JSON.parse(vm.runInContext('JSON.stringify(ASTRA_GATE_HEADER)',ctx)),...nativeFixture.raw].map(r=>r.join(',')).join('\n')}));}};
+function rawSourceText(){return '\uFEFF'+[JSON.parse(vm.runInContext('JSON.stringify(ASTRA_GATE_HEADER)',ctx)),...nativeFixture.raw].map(r=>r.join(',')).join('\n');}
+function sourceStatus(){return {...nativeFixture.status,prices_sha256:crypto.createHash('sha256').update(rawSourceText()).digest('hex')};}
+let sourceFault='';
+ctx.UrlFetchApp={fetch:()=>({getResponseCode:()=>httpCode,getContentText:()=>JSON.stringify(sourceFault==='missing-hash'?nativeFixture.status:sourceStatus())}),fetchAll:()=>{fetchHook();return [0,1].map(i=>({getResponseCode:()=>httpCode,getContentText:()=>i===0?rawSourceText()+(sourceFault==='changed-csv'?'\n':''):JSON.stringify({...sourceStatus(),...(sourceFault==='changed-status'?{rows:1}:{})})}));}};
 ctx.Utilities.parseCsv=s=>s.split('\n').map(r=>r.split(','));
 function setupNative(){
- const f=fixture();docLock=scriptLock=true;httpCode=200;fetchHook=()=>{};store={};
+ const f=fixture();docLock=scriptLock=true;httpCode=200;sourceFault='';fetchHook=()=>{};store={};
  grids={'発注前資金確認':Array.from({length:40},()=>Array(3).fill('')),'SBI連動_v77':Array.from({length:13},()=>Array(15).fill('')),
   '実戦候補TOP10':Array.from({length:11},()=>Array(17).fill('')),'イベント管理':Array.from({length:100},()=>Array(9).fill('')),
   'JPX休場日':Array.from({length:43},()=>['']),'株価データ取込':[Array(18).fill(''),Array(18).fill(''),...nativeFixture.imported.map(r=>[...r])]};
@@ -138,6 +141,7 @@ test('bulk checkbox, unknown inputs, HTTP and lock failures never leave GO',()=>
  const changes=[()=>{store['astra.final.v1.inputs']='{}';},()=>{httpCode=500;},()=>{docLock=false;},()=>{scriptLock=false;}];
  for(const change of changes){setupNative();change();nativeEdit();assert.equal(grids['発注前資金確認'][33][1],false);assert.ok(!store['astra.final.v1.receipt']);}
  setupNative();nativeEdit(34,2,2,1);assert.equal(grids['発注前資金確認'][33][1],false);
+ for(const fault of ['missing-hash','changed-csv','changed-status']){setupNative();sourceFault=fault;nativeEdit();assert.equal(grids['発注前資金確認'][33][1],false);}
 });
 test('changed inputs and concurrent cancellation during audit fail closed',()=>{
  for(const hook of [()=>grids['発注前資金確認'][13][1]=99999,()=>props.setProperty('astra.final.v1.generation','new-edit')]){
