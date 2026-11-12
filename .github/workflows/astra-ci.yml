@@ -1,0 +1,31 @@
+name: Astra offline checks
+
+on:
+  pull_request:
+    paths:
+      - 'astra/**'
+      - 'apps_script/**'
+      - 'tradingview/**'
+      - '.github/workflows/astra-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run offline regression checks
+        run: python -m unittest discover -s astra/tests -v
+      - name: Check Python syntax
+        run: python -m compileall -q astra
+
+# No market-data request, secrets, repository write, Sheets write, or order.

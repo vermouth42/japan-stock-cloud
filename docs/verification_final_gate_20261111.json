@@ -1,0 +1,62 @@
+{
+  "date": "2026-11-11",
+  "unit_tests": 51,
+  "nested_final_scenarios": 18,
+  "native": {
+    "event_control_separator": "CHAR(29) failed; visible separator passed",
+    "formula_only_fixture": "copy-only GO, changed cash and timestamp rejected; not a trade qualification",
+    "copy_button": [
+      "missing code rejected",
+      "out of session rejected"
+    ],
+    "production_button": [
+      "missing code rejected",
+      "out of session rejected"
+    ],
+    "source_bytes_match": true,
+    "read_only_audit": {
+      "result": "success",
+      "market_date": "2026-11-11",
+      "rows": 4500,
+      "stocks": 100,
+      "columns": 18,
+      "duplicates": 0,
+      "source_hash": "50d29e52e597275dadecf6394dbcf33a8c73b8844ecdd82cb8862c431df9b81f",
+      "content_hash": "f7790f3ad52a3dbfeeb45b5108611ab262e1b49b89399ae139ad6c3a87bfd35a"
+    },
+    "formula_errors": 0,
+    "formulas": 22,
+    "production_go_created": false
+  },
+  "deployment": {
+    "production_gate": true,
+    "source_sync_changed": false,
+    "orders": false,
+    "new_contracts": false,
+    "scheduled_prompt_updated": true
+  },
+  "pending": [
+    "scheduled overnight and next-session unattended continuity",
+    "real session final gate acceptance",
+    "real Japan equity candidate push delivery",
+    "live macro feed",
+    "point-in-time 9-way backtest and holdout"
+  ],
+  "verified_at_jst": "2026-11-11T20:29:14+09:00",
+  "ci": {
+    "commit": "01627fb1101c91db08bc789e5d5d4ae8fca76472",
+    "run": 43012343291,
+    "result": "success"
+  },
+  "manifest_ci": {
+    "pr": 4,
+    "tests": 3,
+    "run": 43010660671,
+    "result": "success",
+    "merged": true
+  },
+  "production_workflow": {
+    "run": 43010950415,
+    "result": "success"
+  }
+}

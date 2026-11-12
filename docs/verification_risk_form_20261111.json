@@ -1,0 +1,167 @@
+{
+  "source": "native Sheets API and browser",
+  "copyCases": [
+    {
+      "name": "risk_limit",
+      "pass": true,
+      "values": [
+        "計算可能",
+        200,
+        1400,
+        200,
+        10400,
+        200400,
+        "資金計算のみ・GO禁止"
+      ]
+    },
+    {
+      "name": "cash_limit",
+      "pass": true,
+      "values": [
+        "計算可能",
+        200,
+        100,
+        100,
+        5200,
+        100200,
+        "資金計算のみ・GO禁止"
+      ]
+    },
+    {
+      "name": "cash_below_lot",
+      "pass": true,
+      "values": [
+        "計算可能",
+        200,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "risk_below_lot",
+      "pass": true,
+      "values": [
+        "計算可能",
+        0,
+        1400,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "rank_B",
+      "pass": true,
+      "values": [
+        "A/A+以外",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "missing_cost",
+      "pass": true,
+      "values": [
+        "資金入力不足・数値不正",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "invalid_cost",
+      "pass": true,
+      "values": [
+        "資金入力不足・数値不正",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "stop_at_price",
+      "pass": true,
+      "values": [
+        "損切り価格が現在値以上",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "wrong_symbol",
+      "pass": true,
+      "values": [
+        "入力対象コードが不一致",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "invalid_lot",
+      "pass": true,
+      "values": [
+        "推奨100株未満・単位不正",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "below_vwap",
+      "pass": true,
+      "values": [
+        "現在値・VWAP条件外",
+        0,
+        0,
+        0,
+        0,
+        0,
+        "100株未満・GO禁止"
+      ]
+    },
+    {
+      "name": "explicit_zero_cost",
+      "pass": true,
+      "values": [
+        "計算可能",
+        300,
+        1500,
+        300,
+        15000,
+        300000,
+        "資金計算のみ・GO禁止"
+      ]
+    }
+  ],
+  "copyInputsRestored": true,
+  "productionFormulasAndLabelsMatch": true,
+  "errors": [],
+  "productionInputDefaultsBlank": true,
+  "nativeVisualChecked": true,
+  "goAllowed": false
+}
