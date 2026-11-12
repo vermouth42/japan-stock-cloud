@@ -1,0 +1,26 @@
+'use strict';
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),crypto=require('node:crypto');
+const ctx=vm.createContext({Date,Number,String,Object,Array,JSON,Math,Set,Map,Error});
+for(const f of ['sbi_receipt.gs','final_gate_config.gs','final_gate.gs','automatic_candidates.gs','rank_history.gs'])vm.runInContext(fs.readFileSync('apps_script/'+f,'utf8'),ctx);
+ctx.Utilities={DigestAlgorithm:{SHA_256:'sha256'},Charset:{UTF_8:'utf8'},computeDigest:(_,v)=>[...crypto.createHash('sha256').update(v).digest()]};
+ctx.SpreadsheetApp={flush(){}};
+let grid=[],corrupt=false,created=0;
+const sheet={setFrozenRows(){},getLastRow:()=>grid.length,getRange(r,c,n,w){let formatted=false;return {setNumberFormat(){formatted=true;return this;},setValues(rows){if(r>1)assert.ok(formatted);rows.forEach((x,i)=>grid[r-1+i]=[...x]);return this;},getValues(){let rows=grid.slice(r-1,r-1+n).map(x=>x.slice(c-1,c-1+w));if(corrupt&&r>1)rows[0][4]='corrupt';return rows;}};}};
+const copy='1QO4FhzBW3fivWNgO7he3AwE9cGNEKtL0-Kp8WYEE1yc';
+const book={getId:()=>copy,getSheetByName:()=>grid.length?sheet:null,insertSheet(){created++;return sheet;}};
+const codes=JSON.parse(fs.readFileSync('astra/watchlist.json'));
+let p={schema:'astra.rank-observation.v1',market_date:'2026-11-11',universe:codes,ranks:codes.map(symbol=>({symbol,grade:'A',score:1})),go_allowed:false};
+const now=Date.parse('2026-11-12T10:00:00+09:00');let count=0;
+function test(name,fn){fn();count++;console.log('ok '+name);}
+test('append records UTC and exact strings',()=>{assert.equal(ctx.astraHistoryAppend_(book,p,now).row,2);assert.equal(grid[1][0],'2026-11-12T01:00:00.000Z');assert.equal(created,1);});
+test('unchanged snapshot on same day deduplicates',()=>{assert.equal(ctx.astraHistoryAppend_(book,p,now+900000).appended,false);assert.equal(grid.length,2);});
+test('changed rank appends and chains',()=>{p=JSON.parse(JSON.stringify(p));p.ranks[0].grade='B';ctx.astraHistoryAppend_(book,p,now+1800000);assert.equal(grid.length,3);assert.equal(grid[2][3],grid[1][4]);});
+test('daily heartbeat preserves first observation',()=>{const original=JSON.stringify(grid[1]);ctx.astraHistoryAppend_(book,p,now+86400000);assert.equal(grid.length,4);assert.equal(JSON.stringify(grid[1]),original);});
+test('clock reversal rejected',()=>assert.throws(()=>ctx.astraHistoryAppend_(book,p,now),/時刻逆転/));
+test('corrupt previous row blocks append',()=>{grid[3][5]+='x';assert.throws(()=>ctx.astraHistoryAppend_(book,p,now+90000000),/破損/);grid[3][5]=grid[3][5].slice(0,-1);});
+test('output collision protects unrelated data',()=>{const h=grid[0];grid[0]=['unrelated'];assert.throws(()=>ctx.astraHistoryAppend_(book,p,now+90000000),/見出し/);grid[0]=h;});
+test('unknown workbook rejected',()=>assert.throws(()=>ctx.astraHistoryAppend_({...book,getId:()=> 'other'},p,now),/出力先/));
+test('corrupted readback fails',()=>{p=JSON.parse(JSON.stringify(p));p.ranks[1].grade='C';corrupt=true;assert.throws(()=>ctx.astraHistoryAppend_(book,p,now+90000000));corrupt=false;});
+test('too large payload refused',()=>assert.throws(()=>ctx.astraHistoryAppend_(book,{...p,padding:'x'.repeat(45000)},now),/サイズ/));
+if(process.env.ASTRA_HISTORY_TEST_EXPORT)fs.writeFileSync(process.env.ASTRA_HISTORY_TEST_EXPORT,JSON.stringify(grid.slice(1)));
+console.log(`${count} rank history scenarios passed`);
