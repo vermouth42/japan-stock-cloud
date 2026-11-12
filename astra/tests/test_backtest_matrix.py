@@ -59,3 +59,19 @@ class MatrixTest(unittest.TestCase):
         d['frames'][1]['bars']['1000']['high']=2000
         b=simulate(d,'combined','high_risk')
         self.assertEqual([t['shares'] for t in a['trades'] if t['symbol']=='2000'],[t['shares'] for t in b['trades'] if t['symbol']=='2000'])
+    def test_new_position_closed_intrabar_cannot_reopen_at_same_open(self):
+        d=fixture();d['frames'][0]['bars']['1000']['high']=1040
+        s=copy.deepcopy(d['signals'][0]);s['id']='s2';d['signals'].append(s)
+        r=simulate(d,'combined','high_risk')
+        self.assertEqual(len(r['trades']),1)
+        self.assertEqual(r['rejected']['ALREADY_HELD_THIS_BAR'],1)
+    def test_intrabar_exits_do_not_free_opening_position_slots(self):
+        d=fixture()
+        for code in ('2000','3000'):
+            d['universe'].append(code)
+            for f in d['frames']:f['bars'][code]=dict(f['bars']['1000'])
+            s=copy.deepcopy(d['signals'][0]);s.update(id=code,symbol=code);d['signals'].append(s)
+        for b in d['frames'][0]['bars'].values():b['high']=1040
+        r=simulate(d,'combined','conservative')
+        self.assertEqual(len(r['trades']),2)
+        self.assertEqual(r['rejected']['POSITION_LIMIT'],1)
