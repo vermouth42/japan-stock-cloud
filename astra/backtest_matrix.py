@@ -139,7 +139,7 @@ def simulate(data,mode,profile):
         now=stamp(f['open_at']);bars=f['bars']
         # Exits are settled before new entry sizing. OHLC ordering is unknowable;
         # a conservative same-bar rule forbids recycling intrabar exit proceeds.
-        start_cash=cash;start_held=set(positions)
+        start_cash=cash;start_held=set(positions);opened_this_bar=set()
         equity_open=cash+sum(p.shares*bars[c]['open'] for c,p in positions.items())
         committed_risk=sum(max(0,p.entry-p.stop*(1-slip)+fee*(p.entry+p.stop*(1-slip)))*p.shares for p in positions.values())
         for symbol in list(positions):bracket(symbol,bars[symbol],f['close_at'])
@@ -150,8 +150,8 @@ def simulate(data,mode,profile):
             reason=None;symbol=s['symbol'];entry=bars[symbol]['open']*(1+slip)
             if mode!='combined' and s['horizon']!=mode:reason='MODE'
             elif s['grade'] not in ('A','A+') or not s['conditions_verified']:reason='INELIGIBLE'
-            elif symbol in positions or symbol in start_held:reason='ALREADY_HELD_THIS_BAR'
-            elif len(start_held|set(positions))>=cfg['positions']:reason='POSITION_LIMIT'
+            elif symbol in positions or symbol in start_held or symbol in opened_this_bar:reason='ALREADY_HELD_THIS_BAR'
+            elif len(start_held|opened_this_bar)>=cfg['positions']:reason='POSITION_LIMIT'
             elif not s['stop']<entry<s['target']:reason='GAP_INVALID_LEVELS'
             if reason:rejected[reason]=rejected.get(reason,0)+1;continue
             equity=equity_open
@@ -162,6 +162,7 @@ def simulate(data,mode,profile):
             if q<100:rejected['BELOW_100']=rejected.get('BELOW_100',0)+1;continue
             cost=q*entry*(1+fee);cash-=cost;available-=cost;committed_risk+=q*per_risk
             positions[symbol]=Position(symbol,q,entry,q*entry*fee,s['stop'],s['target'],s['horizon'],f['open_at'])
+            opened_this_bar.add(symbol)
             bracket(symbol,bars[symbol],f['close_at'])
         if f['session_end']:
             for symbol,p in list(positions.items()):

@@ -1,0 +1,196 @@
+{
+  "schema": "astra.legacy-audit.v1",
+  "classification": "REPRODUCED_RESEARCH_ONLY",
+  "source_commit": "102cd947ded147177b1f15656b39e6ea46c3a1c2",
+  "artifact_id": 13160687826,
+  "workflow_run_id": 41484052767,
+  "archive_sha256": "54ac0c56c872fa1479afe7c62628d21fb3da6720adadcdbcb548800782dfcb9e",
+  "file_sha256": {
+    "history.csv": "940e54c3a82ecf024ca518a8858abaf2dc73fc7b71faad90b781793222a3055b",
+    "market.csv": "8a568e4f526027b195677ec653330465b3f6c1807b09bff5236873d1b6b7b8e7",
+    "trades.csv": "f0a81a9c7fc34a8b2fe1a0d6ff9e82157a157fa0eb23b86a7c35fb6f9f0cef0e"
+  },
+  "archived_trades_byte_identical": true,
+  "price_inventory": {
+    "rows": 195711,
+    "symbols": 100,
+    "first": "2016-10-31",
+    "last": "2026-10-30",
+    "minimum_bars": 68,
+    "maximum_bars": 2463,
+    "symbols_below_200_bars": 1,
+    "duplicate_symbol_dates": 0
+  },
+  "rank_inventory": {
+    "observations": 1,
+    "first_observed_at": "2026-11-12T01:27:56.374000+00:00",
+    "last_observed_at": "2026-11-12T01:27:56.374000+00:00",
+    "latest_grade_counts": {
+      "B": 30,
+      "C": 68,
+      "A": 2
+    },
+    "observations_on_or_before_history_end": 0,
+    "hash_chain_valid": true,
+    "hash_chain_proves_authenticity": false,
+    "source_first_publication_verified": false
+  },
+  "legacy_reproductions": [
+    {
+      "trend_ma": 200,
+      "start": "2017-08-27",
+      "end": "2026-10-30",
+      "signal_metrics_R": {
+        "trades": 2589,
+        "win_rate": 36.384704519119346,
+        "avg_r": 0.14386249961207212,
+        "median_r": -0.46045711388926686,
+        "avg_win_r": 1.7940286911173295,
+        "avg_loss_r": -0.7999484004474011,
+        "profit_factor": 1.282698874095095,
+        "total_r": 372.4600114956547,
+        "max_dd_r": 106.3507599924252,
+        "max_losing_streak": 25,
+        "avg_bars": 12.695635380455775,
+        "avg_return_pct": 0.8796812199520129
+      },
+      "legacy_portfolio": {
+        "initial": 1000000,
+        "final": 2027153.0451472912,
+        "cagr_pct": 8.006479018868795,
+        "max_dd_pct": 33.941307196085305,
+        "taken": 745,
+        "skipped": 1844,
+        "years": 9.174537987679672,
+        "yearly_return_pct": {
+          "2017": 10.840055484082999,
+          "2018": -29.30737656282346,
+          "2019": 19.049436107541553,
+          "2020": 10.55415575331411,
+          "2021": -4.053529543612822,
+          "2022": -6.903120437926402,
+          "2023": 26.203893363704033,
+          "2024": 2.2670579608798036,
+          "2025": 27.642162162410735,
+          "2026": 33.581554961907536
+        },
+        "max_concurrent": 5
+      },
+      "open_at_end": 13
+    },
+    {
+      "trend_ma": 0,
+      "start": "2017-08-27",
+      "end": "2026-10-30",
+      "signal_metrics_R": {
+        "trades": 3192,
+        "win_rate": 34.304511278195484,
+        "avg_r": 0.09008937872702408,
+        "median_r": -0.4975008391058665,
+        "avg_win_r": 1.7907617237958386,
+        "avg_loss_r": -0.797958412331799,
+        "profit_factor": 1.1718532646031394,
+        "total_r": 287.56529689666087,
+        "max_dd_r": 172.35541393997684,
+        "max_losing_streak": 29,
+        "avg_bars": 12.404135338345865,
+        "avg_return_pct": 0.5499732692949355
+      },
+      "legacy_portfolio": {
+        "initial": 1000000,
+        "final": 2621834.2107426794,
+        "cagr_pct": 11.077691505634292,
+        "max_dd_pct": 36.2899835168315,
+        "taken": 773,
+        "skipped": 2419,
+        "years": 9.174537987679672,
+        "yearly_return_pct": {
+          "2017": 13.634294260058777,
+          "2018": -28.623911628618657,
+          "2019": 13.301060932726116,
+          "2020": 9.710201402681552,
+          "2021": 8.750136948594234,
+          "2022": 1.475968989819898,
+          "2023": 30.777707244885242,
+          "2024": 8.557949292974133,
+          "2025": 30.26502671535656,
+          "2026": 27.422426805643198
+        },
+        "max_concurrent": 5
+      },
+      "open_at_end": 14
+    }
+  ],
+  "formal": {
+    "status": "DATA_BLOCKED",
+    "formal_performance_approved": false,
+    "go_allowed": false,
+    "blockers": [
+      "historical A/A+ and point-in-time universe unavailable for the price period",
+      "daily bars cannot supply intraday VWAP, volume continuation, wick, gap and board evidence",
+      "event release timestamps and complete three-business-day event coverage unavailable",
+      "corporate-action adjustment is heuristic, not independently reconciled",
+      "legacy portfolio omits cash affordability, 100-share lots and unrealized drawdown",
+      "legacy PF is R-weighted across all signals, not currency PF of executed portfolio trades",
+      "legacy fee=0 and absolute 1-yen slippage are assumptions, not full execution costs",
+      "parameters were compared on the same historical period; no untouched holdout"
+    ],
+    "future_10x_probability": null,
+    "scenarios": [
+      {
+        "mode": "day",
+        "profile": "conservative",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "day",
+        "profile": "aggressive",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "day",
+        "profile": "high_risk",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "swing",
+        "profile": "conservative",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "swing",
+        "profile": "aggressive",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "swing",
+        "profile": "high_risk",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "combined",
+        "profile": "conservative",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "combined",
+        "profile": "aggressive",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      },
+      {
+        "mode": "combined",
+        "profile": "high_risk",
+        "status": "DATA_BLOCKED",
+        "metrics": null
+      }
+    ]
+  }
+}
