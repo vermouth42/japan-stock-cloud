@@ -148,6 +148,8 @@ class Ledger:
     def __init__(self,path):
         self.db=sqlite3.connect(path,timeout=10,isolation_level=None)
         self.db.execute('CREATE TABLE IF NOT EXISTS reservations (id TEXT PRIMARY KEY, symbol TEXT NOT NULL, cash INTEGER NOT NULL, result TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1)')
+        from .notification_outbox import initialize
+        initialize(self.db)
 
     def decide_and_reserve(self,event_id,symbol,codes,evidence,budget,**kwargs):
         if not isinstance(event_id,str) or not re.fullmatch(r'[A-Za-z0-9:._-]{1,150}',event_id):
@@ -166,6 +168,9 @@ class Ledger:
                 result.update(duplicate=False,notify=result['candidate_allowed'])
                 self.db.execute('INSERT INTO reservations VALUES (?,?,?,?,?)',
                                 (event_id,symbol,result['required_cash'],json.dumps(result,ensure_ascii=False),int(result['candidate_allowed'])))
+                if result['candidate_allowed']:
+                    from .notification_outbox import enqueue
+                    enqueue(self.db,event_id,symbol,result,kwargs['now'])
             self.db.execute('COMMIT')
             return result
         except Exception:
