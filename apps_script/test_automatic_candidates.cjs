@@ -69,10 +69,16 @@ test('three-session holiday boundary matches shared JPX calendar',()=>{
 // Mock only external Apps Script services. The actual source functions run.
 let store={},triggers=[],created=0,released=0,lockAvailable=true,grid=null,readBundle=fixture();
 const props={getProperty:k=>store[k]||null,setProperty:(k,v)=>{store[k]=v;},deleteProperty:k=>{delete store[k];}};
+const textFormats=new Set();
+let corruptReadback=false;
 const range=address=>({getValue:()=>grid?.[0][0],getValues:()=>grid,
- setValues:rows=>{assert.equal(address,'A1:F16');assert.equal(rows.length,16);assert.ok(rows.every(r=>r.length===6));grid=rows;},
+ setValues:rows=>{assert.equal(address,'A1:F16');assert.equal(rows.length,16);assert.ok(rows.every(r=>r.length===6));grid=rows.map((r,i)=>r.map((v,j)=>{
+   if(typeof v==='string' && /^\d+$/.test(v) && !(j===0&&i>=6&&textFormats.has('A7:A16')))return Number(v);
+   if(typeof v==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !(i===3&&j===3&&textFormats.has('D4')))return new Date(v+'T00:00:00+09:00');
+   return v;
+  }));if(corruptReadback)grid[6][0]='9999';},
  setFontSize(){return this;},setVerticalAlignment(){return this;},setWrap(){return this;},
- setBackground(){return this;},setFontColor(){return this;},setFontWeight(){return this;},setNumberFormat(){return this;}});
+ setBackground(){return this;},setFontColor(){return this;},setFontWeight(){return this;},setNumberFormat(format){if(format==='@')textFormats.add(address);return this;}});
 const sheet={getRange:range,setFrozenRows(){},setColumnWidths(){},setColumnWidth(){}};
 const book={getId:()=>copy,getSpreadsheetTimeZone:()=> 'Asia/Tokyo',
  getSheetByName:name=>{assert.equal(name,'自動候補照合');return grid?sheet:null;},insertSheet:name=>{assert.equal(name,'自動候補照合');return sheet;}};
@@ -89,6 +95,16 @@ try{
  test('successful refresh only writes dedicated output and verifies readback',()=>{
   const r=ctx.astraRefreshCandidates();assert.equal(r.ok,true);assert.equal(grid[0][0],header('ASTRA_AUTO_MARKER'));
   assert.ok(grid.slice(6).every(r=>r[5]==='禁止'));assert.equal(grid[2][5],100);assert.equal(released,1);
+ });
+ test('numeric stock codes and ISO day stay exact strings on existing Sheets output',()=>{
+  textFormats.clear();ctx.astraRefreshCandidates();
+  assert.equal(typeof grid[6][0],'string');assert.equal(grid[6][0],codes[0]);
+  assert.equal(grid[3][3],'2026-11-11');
+ });
+ test('genuine readback corruption never creates a verified record',()=>{
+  corruptReadback=true;assert.throws(()=>ctx.astraRefreshCandidates());
+  assert.equal(store['astra.candidates.v1.verified'],undefined);corruptReadback=false;
+  ctx.astraRefreshCandidates();
  });
  test('installer is idempotent and preserves existing sync handler',()=>{
   const sync={getHandlerFunction:()=> 'syncJapaneseStocksV76'};triggers=[sync];

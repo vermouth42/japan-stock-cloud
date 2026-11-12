@@ -100,6 +100,10 @@ function astraAutoWrite_(ss,result) {
   (result.candidates||[]).forEach((c,i)=>rows[i+6]=[c.symbol,c.grade,c.shares,c.screening?'観測対象':'見送り',
     c.reasons.length?c.reasons.join(' / '):'実価格・板・口座・調査範囲の接続待ち','禁止']);
   rows.forEach(r=>r.forEach((v,i)=>{if(typeof v==='string'&&v.startsWith('='))r[i]="'"+v;}));
+  // Sheets otherwise coerces numeric stock codes and ISO day strings on write.
+  // Apply on every run, including an output sheet created by an older version.
+  sh.getRange('A7:A16').setNumberFormat('@');
+  sh.getRange('D4').setNumberFormat('@');
   sh.getRange('A1:F16').setValues(rows);
   SpreadsheetApp.flush();
   const written=sh.getRange('A1:F16').getValues();
