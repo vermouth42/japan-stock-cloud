@@ -10,4 +10,4 @@ class AutomaticCandidateNativeTests(unittest.TestCase):
         result = subprocess.run(['node', 'apps_script/test_automatic_candidates.cjs'], cwd=root,
                                 capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('20 automatic candidate scenarios passed', result.stdout)
+        self.assertIn('22 automatic candidate scenarios passed', result.stdout)
