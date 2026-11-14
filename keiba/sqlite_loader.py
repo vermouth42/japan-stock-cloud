@@ -4,8 +4,9 @@
   * entries.horse_id / jockey_id / trainer_id は「名前」。同名馬の混同を避けるため
     馬キーは「馬名_生年 (開催年 - 年齢)」にする。
   * races.class は表記ゆれあり ('1勝クラス' / '500万下' ...) -> 0..4 に正規化。障害は除外。
-  * entries.odds は確定オッズで、信頼できるのは netkeiba 期間 (既定 2021-08-01 以降)。
-    それ以前のオッズは使わず (NaN)、過去成績の集計とファンダメンタル学習にだけ使う。
+  * entries.odds は確定オッズ。実DBでは 1986 年から全期間そろっているので既定では全て使う。
+    odds_since を指定すると、それ以前のオッズは使わず (NaN)、過去成績の集計と
+    ファンダメンタル学習にだけ使う。
   * 取消・除外・中止 (finish_position NULL/0) は結果のあるレースから除く。
   * 結果がまだ無いレース (出馬表) は include_future=True のときだけ残し、
     単勝オッズが無ければ odds_snapshot の値で補う。
@@ -60,8 +61,15 @@ def _last_corner(v) -> float:
     return float(nums[-1]) if nums else np.nan
 
 
+def _blank_to_nan(s: pd.Series) -> pd.Series:
+    s = s.astype("object").where(s.notna(), None)
+    s = s.map(lambda v: v.strip() if isinstance(v, str) else v)
+    return s.where(s.map(lambda v: v not in (None, "", "不明", "None", "nan")), np.nan)
+
+
 def load_db(path: str = "keiba.db", since: str = "2015-01-01",
-            odds_since: str = "2021-08-01", include_future: bool = False) -> pd.DataFrame:
+            odds_since: str | None = None, include_future: bool = False) -> pd.DataFrame:
+    odds_since = odds_since or since
     conn = sqlite3.connect(path, timeout=15)
     try:
         ec, rc, hc = _cols(conn, "entries"), _cols(conn, "races"), _cols(conn, "horses")
@@ -100,8 +108,10 @@ def load_db(path: str = "keiba.db", since: str = "2015-01-01",
         "horse_id": horse_key, "horse_name": name, "horse_no": num(d["e_umaban"]),
         "age": age, "sex": d["h_sex"].fillna("牡"),
         "weight_carried": num(d["e_kinryo"]), "body_weight_diff": num(d["e_weight_diff"]),
-        "jockey_id": d["e_jockey_id"].fillna("不明"), "trainer_id": d["e_trainer_id"].fillna("不明"),
-        "sire_id": d["h_sire"].fillna("不明"),
+        # 不明は NaN のまま渡す -> そのファクターは中立 (レース内平均) 扱いになる。
+        # 「不明」という1人の巨大な調教師・種牡馬として集計されるのを防ぐ。
+        "jockey_id": _blank_to_nan(d["e_jockey_id"]), "trainer_id": _blank_to_nan(d["e_trainer_id"]),
+        "sire_id": _blank_to_nan(d["h_sire"]),
         "odds_win": odds, "finish_pos": fin, "time_sec": time, "last3f_sec": l3,
         "corner_pos": d["e_passing_order"].map(_last_corner),
     })
@@ -137,8 +147,8 @@ def db_check(path: str = "keiba.db") -> str:
         "agari": g["last3f_sec"].apply(lambda s: s.notna().mean()),
         "corner": g["corner_pos"].apply(lambda s: s.notna().mean()),
         "bw_diff": g["body_weight_diff"].apply(lambda s: s.notna().mean()),
-        "trainer": g["trainer_id"].apply(lambda s: (s != "不明").mean()),
-        "sire": g["sire_id"].apply(lambda s: (s != "不明").mean()),
+        "trainer": g["trainer_id"].apply(lambda s: s.notna().mean()),
+        "sire": g["sire_id"].apply(lambda s: s.notna().mean()),
     })
     w = df[df["finish_pos"] == 1]
     t["win_roi_all"] = (w.groupby("year")["odds_win"].sum() / g["odds_win"].count()).round(3)

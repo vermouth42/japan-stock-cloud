@@ -6,7 +6,7 @@
 
 keiba_app の SQLite を直接使う場合 (keiba.db のあるフォルダで実行):
   python -m keiba dbcheck  --db keiba.db       年別の件数・列の充足率
-  python -m keiba backtest --db keiba.db       検証 (賭けるのはオッズのそろう 2021-08 以降)
+  python -m keiba backtest --db keiba.db       検証 (2015年以降を読み込み、2017年以降で賭けを検証)
   python -m keiba predict  --db keiba.db       結果未確定レース (出馬表) の買い目
 """
 from __future__ import annotations
@@ -125,7 +125,7 @@ def main():
     for x in (b, p):
         x.add_argument("--data"); x.add_argument("--db")
         x.add_argument("--since", default="2015-01-01", help="DB から読む開始日 (過去成績の集計用)")
-        x.add_argument("--odds-since", default="2021-08-01", help="この日以降のオッズだけ使う")
+        x.add_argument("--odds-since", default=None, help="この日以降のオッズだけ使う (既定: --since と同じ)")
     for x in (d, b):
         x.add_argument("--no-ablation", action="store_true"); x.add_argument("--out")
     for x in (d, b, p):

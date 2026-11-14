@@ -50,6 +50,8 @@ def db(tmp_path_factory):
     horses = pd.DataFrame({"horse_id": "馬" + h["horse_id"], "name": "馬" + h["horse_id"],
                            "sex": h["sex"].map({"M": "牡", "F": "牝"}), "sire": h["sire_id"],
                            "broodmare_sire": None})
+    horses.loc[horses.index[::3], "sire"] = None        # 血統未取得の馬
+    e.loc[raw["date"] >= "2021-03-01", "trainer_id"] = None   # 調教師が未補完の期間
     snap = raw.loc[fut, ["race_id", "odds_win"]].rename(columns={"odds_win": "odds"})
     snap["umaban"] = raw.loc[fut, "horse_no"]
     snap["fetched_at"] = "x"
@@ -75,6 +77,7 @@ def test_load_db(db):
     assert df.loc[df["date"] < ODDS_SINCE, "odds_win"].isna().all()           # 古いオッズは使わない
     assert df.loc[df["date"] >= ODDS_SINCE, "odds_win"].notna().all()
     assert set(df["surface"]) == {"turf", "dirt"} and set(df["sex"]) <= {"M", "F", "G"}
+    assert df["sire_id"].isna().any() and df["trainer_id"].isna().any()       # 不明は NaN のまま
     assert df["horse_id"].str.contains("_").all()                              # 馬名_生年
     fut = load_db(path, since="2000-01-01", odds_since=ODDS_SINCE, include_future=True)
     card = fut[fut["date"] == raw["date"].max()]
