@@ -97,6 +97,8 @@ def trainable(df: pd.DataFrame, need_odds: bool = True) -> pd.Series:
     ok = has_winner & (df["field_size"] >= 5)
     if need_odds:
         ok &= df["odds_win"].notna().groupby(df["race_id"]).transform("all")
+        if "mkt_ok" in df:
+            ok &= df["mkt_ok"]
     return ok
 
 
@@ -129,8 +131,9 @@ class TwoStageModel:
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         rid = df["race_id"].to_numpy()
         out = df[["race_id", "date", "horse_id", "horse_no", "odds_win", "p_mkt"]].copy()
-        if "finish_pos" in df:
-            out["finish_pos"] = df["finish_pos"]
+        for c in ("finish_pos", "mkt_ok", "overround"):
+            if c in df:
+                out[c] = df[c]
         out["p_fund"] = self.stage1.predict_proba(df[self.features].to_numpy(), rid)
         out["p"] = self.stage2.predict_proba(self._stage2_X(df), rid)
         out["ev"] = out["p"] * out["odds_win"]

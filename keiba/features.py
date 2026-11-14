@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 DIST_BINS = [0, 1400, 1800, 2200, 10_000]
+OVERROUND_MIN, OVERROUND_MAX = 1.12, 1.45
 
 FEATURE_GROUPS: dict[str, list[str]] = {
     "ability": ["fig_last", "fig_m5", "fig_best5", "fig_ewm", "l3f_m5",
@@ -90,7 +91,13 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["corner_pct"] = (df["corner_pos"] - 1) / fs1
     df["exp_win"] = 1.0 / df["field_size"]
     inv = 1.0 / df["odds_win"]
-    df["p_mkt"] = inv / inv.groupby(df["race_id"]).transform("sum")
+    over = inv.groupby(df["race_id"]).transform("sum")
+    df["p_mkt"] = inv / over
+    # 単勝の控除率 20〜26% なら Σ(1/オッズ) は 1.25〜1.35 付近。大きく外れるレースは
+    # 出走馬の行が欠けている等のデータ不備なので、賭けにも市場融合の学習にも使わない。
+    df["overround"] = over
+    df["mkt_ok"] = over.between(OVERROUND_MIN, OVERROUND_MAX) & \
+        df["odds_win"].notna().groupby(df["race_id"]).transform("all")
     df["dist_band"] = pd.cut(df["distance"], DIST_BINS, labels=False)
     df["heavy_now"] = (df["going"] >= 2).astype(float)
     df["gate_pct"] = (df["horse_no"] - 1) / fs1

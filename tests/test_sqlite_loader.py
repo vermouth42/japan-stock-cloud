@@ -43,8 +43,8 @@ def db(tmp_path_factory):
         "ninki": 1, "odds": raw["odds_win"].where(~fut), "age": raw["age"],
         "weight_diff": raw["body_weight_diff"].where(raw["date"] >= "2021-06-01"),
     })
-    e.loc[e.index[::97], "finish_position"] = 0     # 取消・除外
-    e.loc[e.index[1::97], "finish_position"] = None
+    e.loc[e.index[::97], "finish_position"] = 0     # 競走中止 (オッズあり・着順なし)
+    e.loc[e.index[1::97], ["finish_position", "odds"]] = None   # 取消・除外 (オッズなし)
     e.loc[fut, "finish_position"] = None
     h = raw.drop_duplicates("horse_id")
     horses = pd.DataFrame({"horse_id": "馬" + h["horse_id"], "name": "馬" + h["horse_id"],
@@ -73,6 +73,17 @@ def test_load_db(db):
     path, raw = db
     df = load_db(path, since="2000-01-01", odds_since=ODDS_SINCE)
     assert df["finish_pos"].notna().all() and (df["finish_pos"] > 0).all()   # 取消除外・出馬表は除外
+    n_dnf = sqlite3.connect(path).execute(
+        "SELECT COUNT(*) FROM entries WHERE CAST(finish_position AS INTEGER) = 0 "
+        "AND finish_position IS NOT NULL").fetchone()[0]
+    assert n_dnf > 0 and len(df) > 0                                          # 中止馬は残る
+    conn = sqlite3.connect(path)
+    jump = raw["race_id"].unique()[5]
+    last = raw["date"].max().strftime("%Y-%m-%d")
+    expected = conn.execute(
+        "SELECT COUNT(*) FROM entries e JOIN races r USING(race_id) WHERE r.date < ? AND e.race_id != ? "
+        "AND NOT (e.finish_position IS NULL AND e.odds IS NULL)", (last, jump)).fetchone()[0]
+    assert len(df) == expected                      # 取消だけが消え、中止馬は最下位扱いで残る
     assert not df["race_id"].isin([raw["race_id"].unique()[5]]).any()          # 障害は除外
     assert df.loc[df["date"] < ODDS_SINCE, "odds_win"].isna().all()           # 古いオッズは使わない
     assert df.loc[df["date"] >= ODDS_SINCE, "odds_win"].notna().all()

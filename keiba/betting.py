@@ -38,6 +38,8 @@ def select_bets(pred: pd.DataFrame, s: Strategy) -> pd.DataFrame:
     d["odds_eff"] = d["odds_win"] * (1 - s.slippage)
     d["ev_eff"] = d["p"] * d["odds_eff"]
     m = (d["ev_eff"] >= s.ev_min) & (d["p"] >= s.min_prob) & (d["odds_win"] <= s.max_odds)
+    if "mkt_ok" in d:                      # オッズが全頭そろっていないレースは買わない
+        m &= d["mkt_ok"].astype(bool)
     b = d[m].copy()
     o = b["odds_eff"]
     b["kelly"] = (s.kelly_frac * (b["p"] * o - 1) / (o - 1)).clip(lower=0)

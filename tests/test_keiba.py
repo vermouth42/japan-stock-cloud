@@ -91,3 +91,28 @@ def test_walk_forward_runs(feats):
     assert len(per) >= 2
     # 融合モデルの尤度は市場単独とほぼ同等以上 (市場を事前分布に使うため大きく劣化しない)
     assert (per["ll_combined"] >= per["ll_market"] - 0.02).all()
+
+
+def test_incomplete_market_is_not_bet(raw):
+    """出走馬の行が欠けたレース (Σ1/オッズ が異常) は、期待値が水増しされるので買わない。"""
+    rid = raw["race_id"].iloc[-1]
+    fav = raw[raw["race_id"] == rid]["odds_win"].idxmin()
+    F, _ = build_features(raw.drop(index=fav))
+    assert not F.loc[F["race_id"] == rid, "mkt_ok"].any()
+    assert F["mkt_ok"].mean() > 0.97
+    pred = F[F["race_id"] == rid].assign(p=1.0)
+    assert len(select_bets(pred, Strategy(ev_min=0, min_prob=0, max_odds=1e9))) == 0
+
+
+def test_dnf_kept_as_loser():
+    from keiba.schema import normalize
+    raw = generate(n_years=1, races_per_week=5, seed=1)
+    rid = raw["race_id"].iloc[0]
+    i, j = raw.index[raw["race_id"] == rid][:2]
+    raw.loc[i, "finish_pos"] = np.nan                      # 中止: オッズあり
+    raw.loc[j, ["finish_pos", "odds_win"]] = np.nan        # 取消: オッズなし
+    n0 = (raw["race_id"] == rid).sum()
+    out = normalize(raw)
+    r = out[out["race_id"] == rid]
+    assert len(r) == n0 - 1 and r["finish_pos"].notna().all()
+    assert r["finish_pos"].max() == r["finish_pos"].nlargest(2).iloc[1] + 1

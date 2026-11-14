@@ -82,9 +82,17 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     for c in ["distance", "horse_no", "age", "weight_carried", "body_weight_diff",
               "odds_win", "finish_pos", "last3f_sec"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    # 取消・除外・中止 (着順が数値でない過去レース) は除く。未来レース(全頭NaN)は残す
+    # 結果のあるレースで着順が無い馬:
+    #   オッズ無し -> 取消・除外 (馬券は返還) なので行ごと除く
+    #   オッズ有り -> 競走中止・失格。馬券は売られて負けているので「最下位の出走馬」として残す。
+    #                 (除くと残りの馬の市場確率が水増しされ、しかも「その馬が負ける」という
+    #                  未来情報を使うことになり、回収率が実際より高く出る)
     race_has_result = df.groupby("race_id")["finish_pos"].transform(lambda s: s.notna().any())
-    df = df[~(race_has_result & df["finish_pos"].isna())]
+    no_fin = race_has_result & df["finish_pos"].isna()
+    df = df[~(no_fin & df["odds_win"].isna())].copy()
+    no_fin = no_fin.reindex(df.index)
+    worst = df.groupby("race_id")["finish_pos"].transform("max")
+    df.loc[no_fin, "finish_pos"] = worst[no_fin] + 1
     return df.reset_index(drop=True)
 
 

@@ -7,7 +7,8 @@
   * entries.odds は確定オッズ。実DBでは 1986 年から全期間そろっているので既定では全て使う。
     odds_since を指定すると、それ以前のオッズは使わず (NaN)、過去成績の集計と
     ファンダメンタル学習にだけ使う。
-  * 取消・除外・中止 (finish_position NULL/0) は結果のあるレースから除く。
+  * finish_position NULL/0 の馬: オッズ無し=取消・除外として除く。
+    オッズ有り=競走中止・失格として最下位扱いで残す (schema.normalize)。
   * 結果がまだ無いレース (出馬表) は include_future=True のときだけ残し、
     単勝オッズが無ければ odds_snapshot の値で補う。
 DB には SELECT しか発行しない。
@@ -128,11 +129,11 @@ def load_db(path: str = "keiba.db", since: str = "2015-01-01",
                                                     pd.to_numeric(pd.Series(m, index=out.index), errors="coerce"))
     else:
         out = out[has_result]
-        has_result = has_result[has_result]
-    # 信頼できない期間の確定オッズは使わない
-    old = has_result.reindex(out.index).fillna(False) & (out["date"] < pd.Timestamp(odds_since))
+    out = normalize(out)      # 中止/取消の判定は元のオッズで行うので、古いオッズを消す前に実行
+    # odds_since より前の確定オッズは使わない
+    old = out["finish_pos"].notna() & (out["date"] < pd.Timestamp(odds_since))
     out.loc[old, "odds_win"] = np.nan
-    return normalize(out)
+    return out
 
 
 def db_check(path: str = "keiba.db") -> str:
@@ -150,6 +151,10 @@ def db_check(path: str = "keiba.db") -> str:
         "trainer": g["trainer_id"].apply(lambda s: s.notna().mean()),
         "sire": g["sire_id"].apply(lambda s: s.notna().mean()),
     })
+    inv = (1 / df["odds_win"]).groupby(df["race_id"]).sum()
+    yr = df.groupby("race_id")["year"].first()
+    t["overround"] = inv.groupby(yr).median()                       # Σ(1/オッズ) の中央値
+    t["bad_mkt"] = (~inv.between(1.12, 1.45)).groupby(yr).mean()    # オッズ不備レースの割合
     w = df[df["finish_pos"] == 1]
     t["win_roi_all"] = (w.groupby("year")["odds_win"].sum() / g["odds_win"].count()).round(3)
     return t.round(3).to_string()
