@@ -25,7 +25,7 @@ from .schema import normalize
 
 _E_COLS = ["race_id", "horse_id", "jockey_id", "trainer_id", "waku", "umaban", "kinryo",
            "finish_position", "time", "agari_3f", "passing_order", "odds", "age",
-           "weight_diff"]
+           "weight_diff", "body_weight", "train_grade", "prize", "margin"]
 _R_COLS = ["race_id", "date", "racecourse", "distance", "track_type", "track_condition", "class"]
 _H_COLS = ["horse_id", "sex", "sire", "broodmare_sire"]
 
@@ -68,6 +68,40 @@ def _blank_to_nan(s: pd.Series) -> pd.Series:
     return s.where(s.map(lambda v: v not in (None, "", "不明", "None", "nan")), np.nan)
 
 
+def _first_corner(v) -> float:
+    if v is None:
+        return np.nan
+    nums = re.findall(r"\d+", str(v))
+    return float(nums[0]) if nums else np.nan
+
+
+_ORDERED = {"3連単", "馬単"}          # 着順どおりに並べる券種 (それ以外は馬番を昇順に)
+_Z2H = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _bet_type(s) -> str:
+    s = str(s).translate(_Z2H).replace("三", "3").replace("　", "").replace(" ", "")
+    return {"3連複": "3連複", "3連単": "3連単", "馬連複": "馬連", "馬連単": "馬単"}.get(s, s)
+
+
+def load_payouts(path: str = "keiba.db") -> pd.DataFrame:
+    """払戻テーブル -> race_id, bet_type, combo(馬番のタプル), ret(1円あたり払戻)。
+
+    combo は 3連単・馬単だけ着順どおり、それ以外は昇順に並べる。
+    """
+    conn = sqlite3.connect(path, timeout=15)
+    try:
+        d = pd.read_sql_query("SELECT race_id, bet_type, combo, payout FROM payouts", conn)
+    finally:
+        conn.close()
+    d["race_id"] = d["race_id"].astype(str)
+    d["bet_type"] = d["bet_type"].map(_bet_type)
+    d["ret"] = pd.to_numeric(d["payout"], errors="coerce") / 100.0
+    nums = d["combo"].map(lambda s: tuple(int(x) for x in re.findall(r"\d+", str(s))))
+    d["combo"] = [c if bt in _ORDERED else tuple(sorted(c)) for c, bt in zip(nums, d["bet_type"])]
+    return d.dropna(subset=["ret"])[["race_id", "bet_type", "combo", "ret"]]
+
+
 def load_db(path: str = "keiba.db", since: str = "2015-01-01",
             odds_since: str | None = None, include_future: bool = False) -> pd.DataFrame:
     odds_since = odds_since or since
@@ -82,6 +116,10 @@ def load_db(path: str = "keiba.db", since: str = "2015-01-01",
             WHERE r.date >= ? AND r.class NOT LIKE '%障害%'
         """
         d = pd.read_sql_query(q, conn, params=[since])
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        gear = None
+        if "race_gear" in tables and {"race_id", "horse_name", "blinker"} <= _cols(conn, "race_gear"):
+            gear = pd.read_sql_query("SELECT race_id, horse_name, blinker FROM race_gear", conn)
         snap = None
         if include_future and "odds_snapshot" in {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}:
@@ -115,7 +153,20 @@ def load_db(path: str = "keiba.db", since: str = "2015-01-01",
         "sire_id": _blank_to_nan(d["h_sire"]),
         "odds_win": odds, "finish_pos": fin, "time_sec": time, "last3f_sec": l3,
         "corner_pos": d["e_passing_order"].map(_last_corner),
+        # --- 追加ファクター用 (無ければ NaN) ---
+        "first_corner_pos": d["e_passing_order"].map(_first_corner),
+        "body_weight": num(d["e_body_weight"]).where(lambda s: s > 200),
+        "train_grade": _blank_to_nan(d["e_train_grade"]),
+        "prize": num(d["e_prize"]),
+        "damsire_id": _blank_to_nan(d["h_broodmare_sire"]),
     })
+    out["blinker"] = np.nan
+    if gear is not None and len(gear):
+        gear["race_id"] = gear["race_id"].astype(str)
+        gear = gear.drop_duplicates(["race_id", "horse_name"], keep="last") \
+                   .rename(columns={"blinker": "_blinker"})
+        m = out[["race_id", "horse_name"]].merge(gear, on=["race_id", "horse_name"], how="left")
+        out["blinker"] = pd.to_numeric(m["_blinker"], errors="coerce").to_numpy()
     out = out[out["date"].notna() & out["horse_no"].notna() & out["distance"].notna()]
 
     has_result = out.groupby("race_id")["finish_pos"].transform(lambda s: s.notna().any())

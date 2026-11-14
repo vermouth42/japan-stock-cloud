@@ -55,8 +55,31 @@ def db(tmp_path_factory):
     snap = raw.loc[fut, ["race_id", "odds_win"]].rename(columns={"odds_win": "odds"})
     snap["umaban"] = raw.loc[fut, "horse_no"]
     snap["fetched_at"] = "x"
+    e["body_weight"] = np.where(raw["date"] >= "2021-06-01", 470 + raw["body_weight_diff"], np.nan)
+    e["train_grade"] = np.where(raw["date"] >= "2021-06-01", rng.choice(["A", "B", "C"], len(raw)), None)
+    e["prize"] = np.where(raw["finish_pos"] <= 5, 600 - 100 * raw["finish_pos"], 0.0)
+    horses["broodmare_sire"] = ("BMS" + h["sire_id"]).to_numpy()
+    recent = raw["date"] >= "2021-06-01"
+    gear = pd.DataFrame({"race_id": raw.loc[recent, "race_id"], "horse_id": 1,
+                         "blinker": rng.integers(0, 2, recent.sum()), "sex": "牡",
+                         "horse_name": "馬" + raw.loc[recent, "horse_id"]})
+    # 払戻: 単勝・複勝・馬連・ワイド
+    res = raw[~fut].sort_values(["race_id", "finish_pos"])
+    pay = []
+    for rid, g in res.groupby("race_id"):
+        no, od = g["horse_no"].to_numpy(), g["odds_win"].to_numpy()
+        pay.append((rid, "単勝", str(no[0]), int(od[0] * 100)))
+        for k in range(3):
+            pay.append((rid, "複勝", str(no[k]), int(max(110, od[k] * 30))))
+        pay.append((rid, "馬連", f"{no[0]}-{no[1]}", int(od[0] * od[1] * 60)))
+        for a_, b_ in ((0, 1), (0, 2), (1, 2)):
+            pay.append((rid, "ワイド", f"{no[a_]}-{no[b_]}", int(od[a_] * od[b_] * 20)))
+        pay.append((rid, "3連複", f"{no[0]}-{no[1]}-{no[2]}", int(od[0] * od[1] * od[2] * 15)))
+        pay.append((rid, "三連単", f"{no[0]}→{no[1]}→{no[2]}", int(od[0] * od[1] * od[2] * 90)))
+    pay = pd.DataFrame(pay, columns=["race_id", "bet_type", "combo", "payout"])
     conn = sqlite3.connect(path)
-    for name, t in [("races", races), ("entries", e), ("horses", horses), ("odds_snapshot", snap)]:
+    for name, t in [("races", races), ("entries", e), ("horses", horses), ("odds_snapshot", snap),
+                    ("race_gear", gear), ("payouts", pay)]:
         t.to_sql(name, conn, index=False)
     conn.close()
     return path, raw
@@ -108,3 +131,51 @@ def test_backtest_and_predict_on_db(db):
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert "買い目" in out.stdout
+
+
+def test_explore_on_db(db):
+    from keiba.explore import run
+    from keiba.features import EXTRA_FEATURES
+    from keiba.sqlite_loader import load_payouts
+    path, raw = db
+    df = load_db(path, since="2000-01-01")
+    pay = load_payouts(path)
+    assert set(pay["bet_type"]) == {"単勝", "複勝", "馬連", "ワイド", "3連複", "3連単"}
+    assert all(isinstance(c, tuple) for c in pay["combo"])
+    F, cols = build_features(df, extra=True)
+    assert set(EXTRA_FEATURES) <= set(cols) and np.isfinite(F[cols].to_numpy()).all()
+    # 追加ファクターも未来リークしない
+    cut = df["date"].quantile(0.93)
+    F2, cols2 = build_features(df[df["date"] <= cut], extra=True)
+    assert cols2 == cols
+    a = F[F["date"] <= cut].set_index(["race_id", "horse_id"])[cols].sort_index()
+    b = F2.set_index(["race_id", "horse_id"])[cols].sort_index()
+    pd.testing.assert_frame_equal(a, b, check_exact=False, rtol=1e-9, atol=1e-9)
+    text = run(df, pay, log=lambda s: None)
+    for key in ("[1]", "[2]", "[3]", "[5]", "[6]", "D GBM", "ワイドBOX", "3連単流し", "市場(人気順)"):
+        assert key in text
+
+
+def test_pattern_settlement():
+    """8 通りの買い方の精算を手計算と突き合わせる。"""
+    from keiba.explore import pattern_rows
+    # 指数順 = 馬番 1,2,3,4,5,6。着順は 1着=馬番2, 2着=馬番1, 3着=馬番4
+    preds = pd.DataFrame({"race_id": "r", "horse_no": [1, 2, 3, 4, 5, 6],
+                          "p": [0.4, 0.25, 0.15, 0.1, 0.06, 0.04], "p_mkt": [0.3, 0.3, 0.1, 0.1, 0.1, 0.1],
+                          "odds_win": [2.0, 3.0, 8.0, 9.0, 10.0, 11.0],
+                          "finish_pos": [2, 1, 4, 3, 5, 6], "mkt_ok": True})
+    pay = pd.DataFrame([("r", "単勝", (2,), 3.0), ("r", "複勝", (2,), 1.3), ("r", "複勝", (1,), 1.2),
+                        ("r", "複勝", (4,), 2.0), ("r", "馬連", (1, 2), 5.0), ("r", "ワイド", (1, 2), 2.0),
+                        ("r", "ワイド", (2, 4), 6.0), ("r", "ワイド", (1, 4), 4.0),
+                        ("r", "3連複", (1, 2, 4), 20.0), ("r", "3連単", (2, 1, 4), 90.0)],
+                       columns=["race_id", "bet_type", "combo", "ret"])
+    d = pattern_rows(preds, pay).set_index("pattern")
+    got = {k[0]: (v["stake"], v["ret"]) for k, v in d.iterrows()}
+    assert got["1"] == (5000, 0)                 # 指数1位(馬番1)は2着 -> 単勝外れ
+    assert got["2"] == (5000, 6000)              # 複勝 1.2倍
+    assert got["3"] == (7500, 12500)             # 馬連 1-2 的中 2500×5
+    assert got["4"] == (7500, 50000)             # 3連複 1-2-4 的中 2500×20
+    assert got["5"] == (7500, 12500)             # 馬連BOX 1-2
+    assert got["6"] == (7500, 5000)              # ワイドBOX(1,2,3): 1-2 のみ 2500×2
+    assert got["7"] == (8000, 40000)             # 3連複BOX(1-4): 1-2-4 2000×20
+    assert got["8"] == (9000, 0)                 # 3連単流しは指数1位が1着でないので外れ

@@ -34,6 +34,19 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     "pace_draw": ["style", "pace_inter", "draw_ae"],
 }
 ALL_FEATURES = [f for g in FEATURE_GROUPS.values() for f in g]
+# 追加ファクター (build_features(extra=True) のときだけ作る。元データに列が無いものは自動で外す)
+EXTRA_FEATURES = [
+    "past_mkt_m3",       # 近3走で市場がどれだけ評価していたか (平均 log 市場確率)
+    "beat_odds_m5",      # 近5走で人気以上に走ったか (人気順位率 - 着順率)
+    "early_m5",          # 近5走の最初のコーナー位置 (テンの速さ)
+    "jockey_course_ae",  # 騎手のコース別 A/E
+    "kinryo_change",     # 前走からの斤量増減
+    "earn_per_run",      # 1走あたり獲得賞金 (格の指標)
+    "damsire_surf_ae", "damsire_dist_ae",   # 母父の芝ダ別・距離帯別 A/E
+    "body_weight", "bw_dev_abs",            # 馬体重, 自身の平均体重からのズレ
+    "blinker", "blinker_first",             # ブリンカー着用, 初ブリンカー
+    "train_ae",                             # 調教評価ランク別の A/E
+]
 # z スコア化しない列 (フラグや既に交互作用済みのもの)
 _RAW = {"no_fig", "female", "layoff", "pace_inter", "heavy_inter"}
 
@@ -210,8 +223,55 @@ def _connections(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_features(raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """raw (schema 準拠) -> (特徴量付き DataFrame, 特徴量列名)"""
+def _extra_features(df: pd.DataFrame) -> list[str]:
+    """追加ファクター。全て前走以前 or 当日レース前に分かる情報のみ。"""
+    h = df.sort_values(["horse_id", "date"], kind="mergesort")
+    gh = h.groupby("horse_id", sort=False)
+    hid = h["horse_id"]
+
+    def roll(s, w):
+        return s.groupby(hid).rolling(w, min_periods=1).mean().reset_index(level=0, drop=True)
+
+    out = pd.DataFrame(index=h.index)
+    h["_lq"] = np.log(h["p_mkt"].clip(1e-4)) + np.log(h["field_size"])   # 頭数差を除いた市場評価
+    out["past_mkt_m3"] = roll(gh["_lq"].shift(1), 3)
+    pop_pct = (h.groupby("race_id")["odds_win"].rank(method="average") - 1) / (h["field_size"] - 1).clip(lower=1)
+    h["_beat"] = pop_pct - h["fin_pct"]
+    out["beat_odds_m5"] = roll(gh["_beat"].shift(1), 5)
+    out["kinryo_change"] = h["weight_carried"] - gh["weight_carried"].shift(1)
+    if "first_corner_pos" in h and h["first_corner_pos"].notna().any():
+        h["_fc"] = (h["first_corner_pos"] - 1) / (h["field_size"] - 1).clip(lower=1)
+        out["early_m5"] = -roll(gh["_fc"].shift(1), 5)
+    if "prize" in h and h["prize"].notna().any():
+        pz = h["prize"].fillna(0.0)
+        cum = pz.groupby(hid).cumsum() - pz
+        out["earn_per_run"] = np.log1p(cum / gh.cumcount().clip(lower=1))
+    if "body_weight" in h and h["body_weight"].notna().any():
+        out["body_weight"] = h["body_weight"]
+        out["bw_dev_abs"] = (h["body_weight"] - _prior_mean(h, ["horse_id"], "body_weight")).abs()
+    if "blinker" in h and h["blinker"].notna().any():
+        prev = gh["blinker"].shift(1)
+        out["blinker"] = h["blinker"]
+        out["blinker_first"] = ((h["blinker"] == 1) & (prev == 0)).astype(float).where(h["blinker"].notna())
+    for c in out.columns:
+        df[c] = out[c]
+    df["jockey_course_ae"] = _prior_ae(df, ["jockey_id", "course"], "won", "exp_win", k=5)
+    if "damsire_id" in df and df["damsire_id"].notna().any():
+        df["damsire_surf_ae"] = _prior_ae(df, ["damsire_id", "surface"], "won", "exp_win", k=10)
+        df["damsire_dist_ae"] = _prior_ae(df, ["damsire_id", "dist_band"], "won", "exp_win", k=10)
+    if "train_grade" in df and df["train_grade"].notna().any():
+        df["train_ae"] = _prior_ae(df, ["train_grade"], "won", "p_mkt", k=50)
+    cols = [c for c in EXTRA_FEATURES if c in df]
+    for c in cols:
+        if c in ("blinker", "blinker_first"):
+            df[c] = df[c].fillna(0.0)
+        else:
+            df[c] = _race_z(df, c)
+    return cols
+
+
+def build_features(raw: pd.DataFrame, extra: bool = False) -> tuple[pd.DataFrame, list[str]]:
+    """raw (schema 準拠) -> (特徴量付き DataFrame, 特徴量列名)。extra=True で追加ファクターも作る。"""
     df = _prepare(raw)
     df = _speed_figures(df)
     df = _horse_history(df)
@@ -235,4 +295,8 @@ def build_features(raw: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # 道悪: 今日が道悪のときだけ道悪適性が効く
     df["heavy_inter"] = _race_z(df, "_apt_heavy") * df["heavy_now"]
     df[ALL_FEATURES] = df[ALL_FEATURES].fillna(0.0)
-    return df, list(ALL_FEATURES)
+    df["is_turf"] = (df["surface"] == "turf").astype(float)
+    cols = list(ALL_FEATURES)
+    if extra:
+        cols += _extra_features(df)
+    return df, cols

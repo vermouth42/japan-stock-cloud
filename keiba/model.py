@@ -75,6 +75,10 @@ class ConditionalLogit:
             prev = lln
         self.coef_ = b
         self.loglik_ = lln
+        try:                       # 係数の標準誤差 (ヘッセ行列の逆行列) -> z 値で有意性を見られる
+            self.se_ = np.sqrt(np.clip(np.diag(np.linalg.inv(H)), 0, None))
+        except np.linalg.LinAlgError:
+            self.se_ = np.full(k, np.nan)
         return self
 
     def utility(self, X: np.ndarray) -> np.ndarray:
@@ -108,24 +112,67 @@ def log_loss_winner(p: np.ndarray, y: np.ndarray) -> float:
     return float(np.sum(y * np.log(np.clip(p, 1e-12, None))) / n_races)
 
 
+GBM_CONTEXT = ["field_size", "distance", "race_class", "heavy_now", "is_turf"]
+
+
+class GBMStage1:
+    """非線形の Stage1: 勾配ブースティング (scikit-learn)。
+
+    馬ごとの特徴量に加えてレース条件 (頭数・距離・クラス・道悪・芝ダ) も渡すので、
+    「この条件のときだけ効く」という組み合わせを学習できる。出力は勝ちの対数オッズ。
+    use_market=True なら市場確率も入力に入れ、「オッズに対する補正」を直接学習する。
+    """
+
+    def __init__(self, features: list[str], use_market: bool = False, **params):
+        self.features, self.use_market = features, use_market
+        self.params = {"max_iter": 200, "learning_rate": 0.05, "max_leaf_nodes": 15,
+                       "min_samples_leaf": 300, "l2_regularization": 1.0, "random_state": 0, **params}
+
+    def _X(self, df):
+        cols = self.features + [c for c in GBM_CONTEXT if c in df]
+        X = df[cols].to_numpy(float)
+        if self.use_market:
+            X = np.column_stack([X, np.log(df["p_mkt"].clip(1e-6).to_numpy(float))])
+        return X
+
+    def fit(self, df):
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        self.model = HistGradientBoostingClassifier(**self.params)
+        self.model.fit(self._X(df), (df["finish_pos"] == 1).astype(int).to_numpy())
+        return self
+
+    def utility(self, df):
+        return self.model.decision_function(self._X(df))
+
+
 class TwoStageModel:
     """Stage1 (ファンダメンタル) + Stage2 (市場融合)."""
 
-    def __init__(self, features: list[str], l2: float = 5.0):
-        self.features = features
+    def __init__(self, features: list[str], l2: float = 5.0, kind: str = "linear",
+                 use_market: bool = False, **gbm_params):
+        self.features, self.kind = features, kind
         self.stage1 = ConditionalLogit(l2=l2)
+        self.gbm = GBMStage1(features, use_market, **gbm_params) if kind == "gbm" else None
         self.stage2 = ConditionalLogit(l2=1e-3)
 
     def fit(self, train: pd.DataFrame, calib: pd.DataFrame) -> "TwoStageModel":
-        tr = train[trainable(train, need_odds=False)]
-        self.stage1.fit(tr[self.features].to_numpy(), winner_target(tr), tr["race_id"].to_numpy())
+        if self.gbm is not None:
+            self.gbm.fit(train[trainable(train, need_odds=self.gbm.use_market)])
+        else:
+            tr = train[trainable(train, need_odds=False)]
+            self.stage1.fit(tr[self.features].to_numpy(), winner_target(tr), tr["race_id"].to_numpy())
         ca = calib[trainable(calib)]
         Z2 = self._stage2_X(ca)
         self.stage2.fit(Z2, winner_target(ca), ca["race_id"].to_numpy())
         return self
 
+    def _u(self, df):
+        if self.gbm is not None:
+            return self.gbm.utility(df)
+        return self.stage1.utility(df[self.features].to_numpy())
+
     def _stage2_X(self, df):
-        u = self.stage1.utility(df[self.features].to_numpy())
+        u = self._u(df)
         return np.column_stack([u, np.log(df["p_mkt"].clip(1e-6).to_numpy())])
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -134,13 +181,19 @@ class TwoStageModel:
         for c in ("finish_pos", "mkt_ok", "overround"):
             if c in df:
                 out[c] = df[c]
-        out["p_fund"] = self.stage1.predict_proba(df[self.features].to_numpy(), rid)
+        out["p_fund"] = softmax_by_group(self._u(df), _group_index(rid))
         out["p"] = self.stage2.predict_proba(self._stage2_X(df), rid)
         out["ev"] = out["p"] * out["odds_win"]
         return out
 
     def coefficients(self) -> pd.Series:
+        if self.gbm is not None:
+            return pd.Series(dtype=float)
         return pd.Series(self.stage1.coef_, index=self.features).sort_values(key=np.abs, ascending=False)
+
+    def z_values(self) -> pd.Series:
+        """線形 Stage1 の係数 / 標準誤差。|z| > 2 が目安。"""
+        return pd.Series(self.stage1.coef_ / self.stage1.se_, index=self.features)
 
     def market_weights(self) -> dict:
         a, g = self.stage2.coef_ / self.stage2.scale_

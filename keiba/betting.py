@@ -102,21 +102,27 @@ def quinella_probs(p: np.ndarray, lam: float = 0.81) -> np.ndarray:
     return E + E.T
 
 
-def place_probs(p: np.ndarray, lam2: float = 0.81, lam3: float = 0.65) -> np.ndarray:
-    """複勝 (3着以内) 確率。"""
+def top3_probs(p: np.ndarray, lam2: float = 0.81, lam3: float = 0.65):
+    """(各馬の3着以内確率, 2頭がともに3着以内に入る確率の行列) を返す。
+
+    P(i1着,j2着,k3着) = p_i · q2_j/(1−q2_i) · q3_k/(1−q3_i−q3_j)   (q は勝率を lam 乗して再正規化)
+    """
     p = np.asarray(p, float)
     n = len(p)
     q2 = p ** lam2; q2 /= q2.sum()
     q3 = p ** lam3; q3 /= q3.sum()
-    top3 = p.copy()
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
-            pij = p[i] * q2[j] / (1 - q2[i])
-            top3[j] += pij
-            for k in range(n):
-                if k in (i, j):
-                    continue
-                top3[k] += pij * q3[k] / (1 - q3[i] - q3[j])
-    return np.clip(top3, 0, 1)
+    eye = np.eye(n, dtype=bool)
+    E = p[:, None] * q2[None, :] / np.clip(1 - q2[:, None], 1e-9, None)
+    E[eye] = 0.0
+    den = np.clip(1 - q3[:, None] - q3[None, :], 1e-9, None)
+    T = E[:, :, None] * q3[None, None, :] / den[:, :, None]
+    T[eye[:, :, None] | eye[:, None, :] | eye[None, :, :]] = 0.0
+    top3 = p + E.sum(0) + T.sum((0, 1))
+    S12, S13, S23 = T.sum(2), T.sum(1), T.sum(0)
+    pair = S12 + S12.T + S13 + S13.T + S23 + S23.T
+    return np.clip(top3, 0, 1), pair
+
+
+def place_probs(p: np.ndarray, lam2: float = 0.81, lam3: float = 0.65) -> np.ndarray:
+    """複勝 (3着以内) 確率。"""
+    return top3_probs(p, lam2, lam3)[0]

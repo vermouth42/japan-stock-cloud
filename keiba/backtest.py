@@ -19,7 +19,7 @@ from .model import TwoStageModel, trainable, winner_target, log_loss_winner
 def walk_forward(df: pd.DataFrame, features: list[str], test_months: int = 6,
                  calib_months: int = 6, min_train_months: int = 18,
                  base_strategy: Strategy | None = None, l2: float = 5.0,
-                 verbose: bool = True):
+                 verbose: bool = True, make_model=None):
     base_strategy = base_strategy or Strategy()
     start = df["date"].min().normalize()
     end = df["date"].max()
@@ -38,7 +38,7 @@ def walk_forward(df: pd.DataFrame, features: list[str], test_months: int = 6,
         test = test[trainable(test)]
         if len(test) == 0:
             break
-        model = TwoStageModel(features, l2=l2).fit(train, calib)
+        model = (make_model() if make_model else TwoStageModel(features, l2=l2)).fit(train, calib)
         pt = model.predict(test)
 
         if preds:

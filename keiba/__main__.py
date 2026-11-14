@@ -8,6 +8,7 @@ keiba_app の SQLite を直接使う場合 (keiba.db のあるフォルダで実
   python -m keiba dbcheck  --db keiba.db       年別の件数・列の充足率
   python -m keiba backtest --db keiba.db       検証 (2015年以降を読み込み、2017年以降で賭けを検証)
   python -m keiba predict  --db keiba.db       結果未確定レース (出馬表) の買い目
+  python -m keiba explore  --db keiba.db       追加ファクター・非線形モデル・複勝/ワイド/馬連をまとめて検証
 """
 from __future__ import annotations
 
@@ -122,6 +123,9 @@ def main():
     p = sub.add_parser("predict"); p.add_argument("--card"); p.add_argument("--date")
     p.add_argument("--optimize", action="store_true"); p.add_argument("--calib-months", type=int, default=12)
     c = sub.add_parser("dbcheck"); c.add_argument("--db", default="keiba.db")
+    e = sub.add_parser("explore"); e.add_argument("--db", default="keiba.db")
+    e.add_argument("--since", default="2015-01-01"); e.add_argument("--no-gbm", action="store_true")
+    e.add_argument("--out", default="explore_report.txt")
     for x in (b, p):
         x.add_argument("--data"); x.add_argument("--db")
         x.add_argument("--since", default="2015-01-01", help="DB から読む開始日 (過去成績の集計用)")
@@ -135,6 +139,20 @@ def main():
         cmd_demo(a)
     elif a.cmd == "backtest":
         cmd_backtest(_load(a), a)
+    elif a.cmd == "explore":
+        from .explore import run
+        from .sqlite_loader import load_db, load_payouts
+        print("読み込み中...")
+        raw = load_db(a.db, since=a.since)
+        try:
+            pay = load_payouts(a.db)
+        except Exception as ex:            # 払戻テーブルが無くても単勝の検証は続ける
+            print("払戻テーブルを読めませんでした:", ex)
+            pay = None
+        text = run(raw, pay, gbm=not a.no_gbm)
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"\nレポート -> {a.out}")
     elif a.cmd == "dbcheck":
         from .sqlite_loader import db_check
         print(db_check(a.db))
