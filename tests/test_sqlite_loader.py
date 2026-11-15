@@ -163,7 +163,8 @@ def test_pattern_settlement():
     preds = pd.DataFrame({"race_id": "r", "horse_no": [1, 2, 3, 4, 5, 6],
                           "p": [0.4, 0.25, 0.15, 0.1, 0.06, 0.04], "p_mkt": [0.3, 0.3, 0.1, 0.1, 0.1, 0.1],
                           "odds_win": [2.0, 3.0, 8.0, 9.0, 10.0, 11.0],
-                          "finish_pos": [2, 1, 4, 3, 5, 6], "mkt_ok": True})
+                          "finish_pos": [2, 1, 4, 3, 5, 6], "mkt_ok": True,
+                          "date": pd.Timestamp("2024-05-05")})
     pay = pd.DataFrame([("r", "単勝", (2,), 3.0), ("r", "複勝", (2,), 1.3), ("r", "複勝", (1,), 1.2),
                         ("r", "複勝", (4,), 2.0), ("r", "馬連", (1, 2), 5.0), ("r", "ワイド", (1, 2), 2.0),
                         ("r", "ワイド", (2, 4), 6.0), ("r", "ワイド", (1, 4), 4.0),
@@ -179,3 +180,17 @@ def test_pattern_settlement():
     assert got["6"] == (7500, 5000)              # ワイドBOX(1,2,3): 1-2 のみ 2500×2
     assert got["7"] == (8000, 40000)             # 3連複BOX(1-4): 1-2-4 2000×20
     assert got["8"] == (9000, 0)                 # 3連単流しは指数1位が1着でないので外れ
+
+
+def test_validate_and_gbm_predict(db):
+    from keiba.explore import validate
+    from keiba.sqlite_loader import load_payouts
+    path, _ = db
+    text = validate(load_db(path, since="2000-01-01"), load_payouts(path), models=("gbm-mkt",),
+                    log=lambda s: None)
+    for key in ("[V1]", "[V2]", "[V3]", "[V4]", "EV下限"):
+        assert key in text
+    out = subprocess.run([sys.executable, "-m", "keiba", "predict", "--db", path, "--since", "2000-01-01",
+                          "--calib-months", "6", "--model", "gbm-mkt"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert "rank" in out.stdout

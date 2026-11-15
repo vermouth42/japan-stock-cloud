@@ -8,7 +8,9 @@ keiba_app の SQLite を直接使う場合 (keiba.db のあるフォルダで実
   python -m keiba dbcheck  --db keiba.db       年別の件数・列の充足率
   python -m keiba backtest --db keiba.db       検証 (2015年以降を読み込み、2017年以降で賭けを検証)
   python -m keiba predict  --db keiba.db       結果未確定レース (出馬表) の買い目
-  python -m keiba explore  --db keiba.db       追加ファクター・非線形モデル・複勝/ワイド/馬連をまとめて検証
+  python -m keiba explore  --db keiba.db       追加ファクター・非線形モデル・8通りの買い方をまとめて検証
+  python -m keiba validate --db keiba.db       候補ルール (指数1位の期待値が高いレースだけ買う) の詳細検証
+  python -m keiba predict  --db keiba.db --model gbm-mkt     非線形+市場モデルで出馬表を予測
 """
 from __future__ import annotations
 
@@ -80,7 +82,8 @@ def cmd_predict(args):
     allr = _load(args, include_future=True)
     if args.card:
         allr = pd.concat([allr, normalize(pd.read_csv(args.card))], ignore_index=True)
-    F, cols = build_features(allr)
+    from .explore import MODELS
+    F, cols = build_features(allr, extra=args.model != "linear")
     future = ~F["finish_pos"].notna().groupby(F["race_id"]).transform("any")
     if args.date:
         future &= F["date"] == pd.Timestamp(args.date)
@@ -92,19 +95,21 @@ def cmd_predict(args):
     cut = card["date"].min()
     past = F[(F["date"] < cut) & ~future]
     c0 = cut - pd.DateOffset(months=args.calib_months)
-    model = TwoStageModel(cols).fit(past[past["date"] < c0], past[past["date"] >= c0])
+    model = MODELS[args.model](cols).fit(past[past["date"] < c0], past[past["date"] >= c0])
     strat = Strategy(slippage=args.slippage)
     if args.optimize:
         strat, _ = optimize_strategy(model.predict(past[past["date"] >= c0]).dropna(subset=["p"]), strat)
     pred = model.predict(card)
     if "horse_name" in card:
         pred["horse"] = card["horse_name"]
+    pred["rank"] = pred.groupby("race_id")["p"].rank(ascending=False, method="first").astype("Int64")
     bets = select_bets(pred, strat)
     pd.set_option("display.width", 200)
     pd.set_option("display.unicode.east_asian_width", True)
     print("戦略:", json.dumps(strat.to_dict(), ensure_ascii=False))
     cols_out = ["race_id", "horse_no"] + (["horse"] if "horse" in pred else []) + \
         ["odds_win", "p_mkt", "p_fund", "p", "ev"]
+    cols_out = cols_out[:2] + ["rank"] + cols_out[2:]
     print(pred[cols_out].sort_values(["race_id", "p"], ascending=[True, False]).round(3).to_string(index=False))
     print("\n=== 買い目 (kelly = 資金に対する賭け比率) ===")
     print(bets[cols_out + ["kelly"]].round(4).to_string(index=False) if len(bets) else "該当なし (見送り)")
@@ -126,6 +131,10 @@ def main():
     e = sub.add_parser("explore"); e.add_argument("--db", default="keiba.db")
     e.add_argument("--since", default="2015-01-01"); e.add_argument("--no-gbm", action="store_true")
     e.add_argument("--out", default="explore_report.txt")
+    v = sub.add_parser("validate"); v.add_argument("--db", default="keiba.db")
+    v.add_argument("--since", default="2015-01-01"); v.add_argument("--ev-min", type=float, default=1.1)
+    v.add_argument("--out", default="validate_report.txt")
+    p.add_argument("--model", default="linear", choices=["linear", "gbm", "gbm-mkt", "mkt-only"])
     for x in (b, p):
         x.add_argument("--data"); x.add_argument("--db")
         x.add_argument("--since", default="2015-01-01", help="DB から読む開始日 (過去成績の集計用)")
@@ -139,6 +148,20 @@ def main():
         cmd_demo(a)
     elif a.cmd == "backtest":
         cmd_backtest(_load(a), a)
+    elif a.cmd == "validate":
+        from .explore import validate
+        from .sqlite_loader import load_db, load_payouts
+        print("読み込み中...")
+        raw = load_db(a.db, since=a.since)
+        try:
+            pay = load_payouts(a.db)
+        except Exception as ex:
+            print("払戻テーブルを読めませんでした:", ex)
+            pay = None
+        text = validate(raw, pay, thr=a.ev_min)
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"\nレポート -> {a.out}")
     elif a.cmd == "explore":
         from .explore import run
         from .sqlite_loader import load_db, load_payouts

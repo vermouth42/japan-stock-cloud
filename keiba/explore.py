@@ -101,8 +101,9 @@ def pattern_rows(preds: pd.DataFrame, payouts: pd.DataFrame, rank_by: str = "p")
                 continue
             table = pay[bt]
             ret = sum(table.get((rid, c), 0.0) for c in tk) * stake
-            rows.append((rid, name, len(tk) * stake, ret, ev1, top["p"], is_fav, len(g)))
-    return pd.DataFrame(rows, columns=["race_id", "pattern", "stake", "ret", "ev1", "p1", "is_fav", "field"])
+            rows.append((rid, name, len(tk) * stake, ret, ev1, top["p"], is_fav, len(g), top["date"].year))
+    return pd.DataFrame(rows, columns=["race_id", "pattern", "stake", "ret", "ev1", "p1", "is_fav",
+                                       "field", "year"])
 
 
 def pattern_table(d: pd.DataFrame) -> pd.DataFrame:
@@ -212,4 +213,85 @@ def run(raw: pd.DataFrame, payouts: pd.DataFrame | None = None, test_months: int
             out(f"--- {name} / 指数1位が1番人気かどうか")
             out(_fmt(pattern_pivot(d, d["is_fav"].map({True: "1番人気と同じ", False: "1番人気と違う"}))))
     out(f"\n合計 {round(time.time() - t0)} 秒")
+    return "\n".join(L)
+
+
+# ====================================================================== validate
+MODELS = {
+    "linear": lambda cols: TwoStageModel(cols),
+    "gbm": lambda cols: TwoStageModel(cols, kind="gbm"),
+    "gbm-mkt": lambda cols: TwoStageModel(cols, kind="gbm", use_market=True),
+    # 自前ファクターを一切使わず、市場確率とレース条件だけ (オッズの歪みの補正だけでどこまで行くか)
+    "mkt-only": lambda cols: TwoStageModel([], kind="gbm", use_market=True),
+}
+THRESHOLDS = [1.0, 1.05, 1.1, 1.15, 1.2, 1.3]
+
+
+def rank1_rows(preds: pd.DataFrame) -> pd.DataFrame:
+    """各レースの指数1位 (モデル勝率が最大の馬) だけを取り出す。"""
+    ok = preds[preds["mkt_ok"].astype(bool) & preds["finish_pos"].notna() & preds["p"].notna()]
+    r = ok.loc[ok.groupby("race_id")["p"].idxmax()].copy()
+    r["ret"] = (r["finish_pos"] == 1) * r["odds_win"]
+    r["year"] = r["date"].dt.year
+    return r
+
+
+def _roi_ci(ret: np.ndarray):
+    n = len(ret)
+    if n < 2:
+        return (ret.mean() if n else np.nan), np.nan, np.nan
+    se = ret.std(ddof=1) / np.sqrt(n)
+    return ret.mean(), ret.mean() - 1.96 * se, ret.mean() + 1.96 * se
+
+
+def threshold_table(r: pd.DataFrame, slippage: float = 0.05) -> pd.DataFrame:
+    rows = []
+    for thr in THRESHOLDS:
+        s = r[r["ev"] >= thr]
+        roi, lo, hi = _roi_ci(s["ret"].to_numpy())
+        s2 = r[r["ev"] * (1 - slippage) >= thr]          # オッズが悪化しても条件を満たす馬だけ買う
+        roi2, lo2, _ = _roi_ci(s2["ret"].to_numpy() * (1 - slippage))
+        rows.append({"EV下限": thr, "レース数": len(s), "的中率": (s["ret"] > 0).mean() if len(s) else np.nan,
+                     "平均オッズ": s["odds_win"].mean(), "回収率": roi, "lo95": lo, "hi95": hi,
+                     f"オッズ{int(slippage * 100)}%悪化: 数": len(s2), "回収率 ": roi2, "lo95 ": lo2})
+    return pd.DataFrame(rows)
+
+
+def year_table(r: pd.DataFrame, thr: float) -> pd.DataFrame:
+    s = r[r["ev"] >= thr]
+    g = s.groupby("year")
+    return pd.DataFrame({"レース数": g.size(), "的中率": g["ret"].apply(lambda x: (x > 0).mean()),
+                         "回収率": g["ret"].mean(),
+                         "収支(5千円/R)": ((g["ret"].sum() - g.size()) * 5000).round()}).reset_index()
+
+
+def validate(raw: pd.DataFrame, payouts: pd.DataFrame | None = None, thr: float = 1.1,
+             models=("gbm-mkt", "mkt-only"), log=print) -> str:
+    """候補ルール「指数1位の単勝期待値が thr 以上のレースだけ買う」を詳しく検証する。"""
+    L: list[str] = []
+
+    def out(s=""):
+        L.append(s)
+        log(s)
+
+    F, cols = build_features(raw, extra=True)
+    for name in models:
+        _, _, preds, _ = walk_forward(F, cols, test_months=12, make_model=lambda: MODELS[name](cols),
+                                      base_strategy=Strategy(ev_min=9e9), verbose=False)
+        r = rank1_rows(preds)
+        out(f"\n================ モデル: {name}  (検証 {r['year'].min()}〜{r['year'].max()}年, {len(r)} レース)")
+        out("[V1] 指数1位の単勝を、期待値 (p×オッズ) が下限以上のレースだけ買った場合")
+        out(_fmt(threshold_table(r)))
+        out(f"\n[V2] 年別 (EV下限 {thr})。特定の年だけで稼いでいないかを見る")
+        out(_fmt(year_table(r, thr)))
+        out("\n[V3] 指数1位に限らず、期待値の高い馬すべての単勝回収率")
+        out(_fmt(roi_table(win_rows(preds), "ev", [1.0, 1.1, 1.2, 1.3, 1.5, 2.0, np.inf])))
+        if payouts is not None and len(payouts):
+            d = pattern_rows(preds, payouts)
+            s = d[d["ev1"] >= thr]
+            out(f"\n[V4] 8 通りの買い方 (指数1位の EV が {thr} 以上のレースだけ。払戻のある 2021-08 以降)")
+            out(_fmt(pattern_table(s)) if len(s) else "(該当レースなし)")
+            if len(s):
+                out("[V5] その年別回収率 (列 1〜8 は買い方の番号)")
+                out(_fmt(pattern_pivot(s, s["year"])))
     return "\n".join(L)
