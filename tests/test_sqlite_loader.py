@@ -194,3 +194,11 @@ def test_validate_and_gbm_predict(db):
                           "--calib-months", "6", "--model", "gbm-mkt"], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert "rank" in out.stdout
+
+
+def test_diagnose(db):
+    from keiba.explore import diagnose
+    path, _ = db
+    text = diagnose(load_db(path, since="2000-01-01"), thr=1.0, log=lambda s: None)
+    for key in ("[D1]", "[D2]", "[D3]", "調教評価(train_ae)を外す", "追加ファクターを全部外す"):
+        assert key in text

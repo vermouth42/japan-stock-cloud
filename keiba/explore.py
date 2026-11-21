@@ -295,3 +295,105 @@ def validate(raw: pd.DataFrame, payouts: pd.DataFrame | None = None, thr: float 
                 out("[V5] その年別回収率 (列 1〜8 は買い方の番号)")
                 out(_fmt(pattern_pivot(s, s["year"])))
     return "\n".join(L)
+
+
+# ====================================================================== diagnose
+DIAG_COVER = ["odds_win", "trainer_id", "sire_id", "damsire_id", "train_grade", "body_weight",
+              "body_weight_diff", "blinker", "prize", "first_corner_pos", "corner_pos"]
+
+
+def coverage_by_year(F: pd.DataFrame) -> pd.DataFrame:
+    """年別の列の充足率 (データの入り方が年で変わると、モデルがその変化を「信号」と誤認しうる)。"""
+    cols = [c for c in DIAG_COVER if c in F]
+    g = F.assign(year=F["date"].dt.year).groupby("year")
+    return g[cols].agg(lambda s: s.notna().mean()).round(3).reset_index()
+
+
+def _year_counts(r: pd.DataFrame, thr: float) -> pd.Series:
+    s = r[r["ev"] >= thr]
+    return s.groupby("year").size()
+
+
+def diagnose(raw: pd.DataFrame, thr: float = 1.1, log=print) -> str:
+    """D モデル (gbm-mkt) の高期待値レースが特定の年に集中する原因を切り分ける。
+
+    1. 年別のデータ充足率
+    2. 特徴量グループを1つずつ外した D モデルで、該当レース数・回収率が年別にどう変わるか
+       -> 外すと偏りが消えるグループが、偏りの原因
+    3. 該当レースの指数1位馬は、他の指数1位馬と比べてどの特徴量が違うか
+    """
+    L: list[str] = []
+
+    def out(s=""):
+        L.append(s)
+        log(s)
+
+    F, cols = build_features(raw, extra=True)
+    out("[D1] 年別のデータ充足率 (1=全頭あり, 0=全く無し)")
+    out(_fmt(coverage_by_year(F)))
+
+    extras = [c for c in cols if c not in ALL_FEATURES]
+    groups = {
+        "全部入り": [],
+        "調教評価(train_ae)を外す": ["train_ae"],
+        "調教師系を外す": ["trainer_ae", "trainer_mkt_ae", "jt_ae"],
+        "騎手系を外す": ["jockey_ae", "jockey_mkt_ae", "jockey_upgrade", "jockey_course_ae"],
+        "血統系を外す": ["sire_surf_ae", "sire_dist_ae", "sire_dist_fit", "damsire_surf_ae", "damsire_dist_ae"],
+        "賞金・過去人気を外す": ["earn_per_run", "past_mkt_m3", "beat_odds_m5"],
+        "追加ファクターを全部外す": extras,
+    }
+    summary, years, keep = [], {}, None
+    for name, drop in groups.items():
+        use = [c for c in cols if c not in drop]
+        _, _, preds, _ = walk_forward(F, use, test_months=12,
+                                      make_model=lambda u=use: TwoStageModel(u, kind="gbm", use_market=True),
+                                      base_strategy=Strategy(ev_min=9e9), verbose=False)
+        r = rank1_rows(preds)
+        s = r[r["ev"] >= thr]
+        roi, lo, hi = _roi_ci(s["ret"].to_numpy())
+        y = s["year"].value_counts()
+        summary.append({"モデル": name, "外した数": len([c for c in drop if c in cols]), "レース数": len(s),
+                        "回収率": roi, "lo95": lo, "hi95": hi,
+                        "最多の年": int(y.idxmax()) if len(y) else None,
+                        "その年の割合": (y.max() / len(s)) if len(s) else np.nan})
+        years[name] = _year_counts(r, thr)
+        log(f"  {name} 完了")
+        if name == "全部入り":
+            keep = (F, r)
+    out(f"\n[D2] 特徴量グループを外した D モデル: 指数1位の単勝 EV≥{thr} のレース")
+    out("     外すと「その年の割合」が大きく下がるグループが、年の偏りの原因")
+    out(_fmt(pd.DataFrame(summary)))
+    out(f"\n[D3] 同じく年別のレース数")
+    out(_fmt(pd.DataFrame(years).fillna(0).astype(int).rename_axis("year").reset_index()))
+
+    F, r = keep
+    if len(r[r["ev"] >= thr]):
+        top_year = int(r.loc[r["ev"] >= thr, "year"].value_counts().idxmax())
+        sel = r[(r["ev"] >= thr) & (r["year"] == top_year)]
+        rest = r[(r["ev"] < thr) & (r["year"] == top_year)]
+        Fi = F.set_index(["race_id", "horse_no"])
+        a = Fi.loc[list(zip(sel["race_id"], sel["horse_no"])), cols].mean()
+        b = Fi.loc[list(zip(rest["race_id"], rest["horse_no"])), cols].mean()
+        sd = Fi[cols].std().replace(0, np.nan)
+        diff = ((a - b) / sd).dropna().sort_values(key=np.abs, ascending=False).head(12)
+        out(f"\n[D4] {top_year}年: 該当レースの指数1位馬 と それ以外の指数1位馬 の特徴量の差 (標準偏差単位)")
+        out(diff.round(2).to_string())
+        cond = F.assign(year=F["date"].dt.year)
+        cond = cond[cond["race_id"].isin(sel["race_id"])].drop_duplicates("race_id")
+        allr = F[F["date"].dt.year == top_year].drop_duplicates("race_id")
+        out(f"\n[D5] {top_year}年: 該当レースの条件 (割合) と その年の全レース")
+        for c in ("course", "surface", "race_class"):
+            t = pd.DataFrame({"該当": cond[c].value_counts(normalize=True),
+                              "全体": allr[c].value_counts(normalize=True)}).fillna(0).round(3)
+            out(f"--- {c}")
+            out(t.sort_values("該当", ascending=False).head(10).to_string())
+        if "train_grade" in F:
+            out(f"\n[D6] {top_year}年: 調教評価 (train_grade) の有無")
+            rk = F.set_index(["race_id", "horse_no"]).loc[list(zip(r["race_id"], r["horse_no"]))]
+            r2 = r.assign(has_tg=rk["train_grade"].notna().to_numpy())
+            r2 = r2[r2["year"] == top_year]
+            t = r2.groupby("has_tg").agg(指数1位の数=("ret", "size"),
+                                         EV以上の数=("ev", lambda e: (e >= thr).sum()),
+                                         回収率_全体=("ret", "mean"))
+            out(t.round(3).to_string())
+    return "\n".join(L)

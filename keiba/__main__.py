@@ -11,6 +11,7 @@ keiba_app の SQLite を直接使う場合 (keiba.db のあるフォルダで実
   python -m keiba explore  --db keiba.db       追加ファクター・非線形モデル・8通りの買い方をまとめて検証
   python -m keiba validate --db keiba.db       候補ルール (指数1位の期待値が高いレースだけ買う) の詳細検証
   python -m keiba predict  --db keiba.db --model gbm-mkt     非線形+市場モデルで出馬表を予測
+  python -m keiba diagnose --db keiba.db       高期待値レースが特定の年に偏る原因の切り分け
 """
 from __future__ import annotations
 
@@ -134,6 +135,9 @@ def main():
     v = sub.add_parser("validate"); v.add_argument("--db", default="keiba.db")
     v.add_argument("--since", default="2015-01-01"); v.add_argument("--ev-min", type=float, default=1.1)
     v.add_argument("--out", default="validate_report.txt")
+    g = sub.add_parser("diagnose"); g.add_argument("--db", default="keiba.db")
+    g.add_argument("--since", default="2015-01-01"); g.add_argument("--ev-min", type=float, default=1.1)
+    g.add_argument("--out", default="diagnose_report.txt")
     p.add_argument("--model", default="linear", choices=["linear", "gbm", "gbm-mkt", "mkt-only"])
     for x in (b, p):
         x.add_argument("--data"); x.add_argument("--db")
@@ -148,6 +152,15 @@ def main():
         cmd_demo(a)
     elif a.cmd == "backtest":
         cmd_backtest(_load(a), a)
+    elif a.cmd == "diagnose":
+        import os
+        from .explore import diagnose
+        from .sqlite_loader import load_db
+        print("読み込み中...")
+        text = diagnose(load_db(a.db, since=a.since), thr=a.ev_min)
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"\nレポート -> {os.path.abspath(a.out)}")
     elif a.cmd == "validate":
         from .explore import validate
         from .sqlite_loader import load_db, load_payouts
@@ -161,7 +174,7 @@ def main():
         text = validate(raw, pay, thr=a.ev_min)
         with open(a.out, "w", encoding="utf-8") as f:
             f.write(text)
-        print(f"\nレポート -> {a.out}")
+        print(f"\nレポート -> {__import__('os').path.abspath(a.out)}")
     elif a.cmd == "explore":
         from .explore import run
         from .sqlite_loader import load_db, load_payouts
@@ -175,7 +188,7 @@ def main():
         text = run(raw, pay, gbm=not a.no_gbm)
         with open(a.out, "w", encoding="utf-8") as f:
             f.write(text)
-        print(f"\nレポート -> {a.out}")
+        print(f"\nレポート -> {__import__('os').path.abspath(a.out)}")
     elif a.cmd == "dbcheck":
         from .sqlite_loader import db_check
         print(db_check(a.db))
