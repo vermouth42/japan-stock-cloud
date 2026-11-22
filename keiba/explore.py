@@ -309,6 +309,16 @@ def coverage_by_year(F: pd.DataFrame) -> pd.DataFrame:
     return g[cols].agg(lambda s: s.notna().mean()).round(3).reset_index()
 
 
+def pedigree_presence_table(F: pd.DataFrame) -> pd.DataFrame:
+    d = F[F["finish_pos"].notna() & F["p_mkt"].notna()].assign(
+        year=F["date"].dt.year, 血統=np.where(F["sire_id"].notna(), "あり", "なし"))
+    d["ret"] = (d["finish_pos"] == 1) * d["odds_win"]
+    g = d.groupby(["year", "血統"])
+    t = pd.DataFrame({"出走数": g.size(), "A/E": g["won"].sum() / g["p_mkt"].sum(),
+                      "単勝回収率(全馬)": g["ret"].mean()}).reset_index()
+    return t.pivot(index="year", columns="血統").round(3).reset_index()
+
+
 def _year_counts(r: pd.DataFrame, thr: float) -> pd.Series:
     s = r[r["ev"] >= thr]
     return s.groupby("year").size()
@@ -331,6 +341,10 @@ def diagnose(raw: pd.DataFrame, thr: float = 1.1, log=print) -> str:
     F, cols = build_features(raw, extra=True)
     out("[D1] 年別のデータ充足率 (1=全頭あり, 0=全く無し)")
     out(_fmt(coverage_by_year(F)))
+    out("\n[D0] 血統の有無と成績 (A/E = 実際の勝利数 / オッズから見た期待勝利数)")
+    out("     市場は「後で血統を取得される馬か」を知り得ないので、A/E が 1 から大きく離れる年は")
+    out("     血統の有無が未来の情報 (=その後も現役を続けた馬か) になっている")
+    out(_fmt(pedigree_presence_table(F)))
 
     extras = [c for c in cols if c not in ALL_FEATURES]
     groups = {

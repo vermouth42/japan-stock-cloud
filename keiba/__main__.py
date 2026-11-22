@@ -69,11 +69,19 @@ def cmd_demo(args):
     cmd_backtest(df, args)
 
 
+def _ped_msg(df):
+    if "pedigree_since" in df.attrs:
+        print(f"血統 (父・母父) は {df.attrs['pedigree_since']} 以降のレースだけ使用 "
+              f"(それ以前は一部の馬にしか無く、生存者バイアスになるため)")
+
+
 def _load(args, include_future=False):
     if args.db:
         from .sqlite_loader import load_db
-        return load_db(args.db, since=args.since, odds_since=args.odds_since,
-                       include_future=include_future)
+        df = load_db(args.db, since=args.since, odds_since=args.odds_since,
+                     include_future=include_future, pedigree_since=args.pedigree_since)
+        _ped_msg(df)
+        return df
     if not args.data:
         sys.exit("--data か --db のどちらかを指定してください")
     return load_csv(args.data)
@@ -132,9 +140,11 @@ def main():
     e = sub.add_parser("explore"); e.add_argument("--db", default="keiba.db")
     e.add_argument("--since", default="2015-01-01"); e.add_argument("--no-gbm", action="store_true")
     e.add_argument("--out", default="explore_report.txt")
+    e.add_argument("--pedigree-since", default="auto")
     v = sub.add_parser("validate"); v.add_argument("--db", default="keiba.db")
     v.add_argument("--since", default="2015-01-01"); v.add_argument("--ev-min", type=float, default=1.1)
     v.add_argument("--out", default="validate_report.txt")
+    v.add_argument("--pedigree-since", default="auto")
     g = sub.add_parser("diagnose"); g.add_argument("--db", default="keiba.db")
     g.add_argument("--since", default="2015-01-01"); g.add_argument("--ev-min", type=float, default=1.1)
     g.add_argument("--out", default="diagnose_report.txt")
@@ -143,6 +153,8 @@ def main():
         x.add_argument("--data"); x.add_argument("--db")
         x.add_argument("--since", default="2015-01-01", help="DB から読む開始日 (過去成績の集計用)")
         x.add_argument("--odds-since", default=None, help="この日以降のオッズだけ使う (既定: --since と同じ)")
+        x.add_argument("--pedigree-since", default="auto",
+                       help="血統を使う開始日。auto=全頭そろった年から / none=全期間")
     for x in (d, b):
         x.add_argument("--no-ablation", action="store_true"); x.add_argument("--out")
     for x in (d, b, p):
@@ -157,7 +169,8 @@ def main():
         from .explore import diagnose
         from .sqlite_loader import load_db
         print("読み込み中...")
-        text = diagnose(load_db(a.db, since=a.since), thr=a.ev_min)
+        # 診断は「血統の有無そのもの」を調べるので、血統は消さずに読む
+        text = diagnose(load_db(a.db, since=a.since, pedigree_since="none"), thr=a.ev_min)
         with open(a.out, "w", encoding="utf-8") as f:
             f.write(text)
         print(f"\nレポート -> {os.path.abspath(a.out)}")
@@ -165,7 +178,8 @@ def main():
         from .explore import validate
         from .sqlite_loader import load_db, load_payouts
         print("読み込み中...")
-        raw = load_db(a.db, since=a.since)
+        raw = load_db(a.db, since=a.since, pedigree_since=a.pedigree_since)
+        _ped_msg(raw)
         try:
             pay = load_payouts(a.db)
         except Exception as ex:
@@ -179,7 +193,8 @@ def main():
         from .explore import run
         from .sqlite_loader import load_db, load_payouts
         print("読み込み中...")
-        raw = load_db(a.db, since=a.since)
+        raw = load_db(a.db, since=a.since, pedigree_since=a.pedigree_since)
+        _ped_msg(raw)
         try:
             pay = load_payouts(a.db)
         except Exception as ex:            # 払戻テーブルが無くても単勝の検証は続ける

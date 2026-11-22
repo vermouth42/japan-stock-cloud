@@ -102,8 +102,44 @@ def load_payouts(path: str = "keiba.db") -> pd.DataFrame:
     return d.dropna(subset=["ret"])[["race_id", "bet_type", "combo", "ret"]]
 
 
+def mask_partial_pedigree(df: pd.DataFrame, pedigree_since: str = "auto",
+                          min_coverage: float = 0.95) -> pd.DataFrame:
+    """血統 (父・母父) が一部の馬にしか入っていない期間は、血統を全頭「不明」にする。
+
+    血統を後から取得した場合、過去のレースで血統が入っているのは「その後も現役を続けた馬」
+    (=後で出馬表に載って取得対象になった馬) に偏る。血統の有無そのものが未来の情報になり、
+    モデルが「血統がある馬はよく走る」と学習してしまう (生存者バイアスによるリーク)。
+    pedigree_since="auto": 結果のある出走で父の充足率が min_coverage 以上になった最初の年から使う。
+    "none": 何もしない。日付文字列: その日以降だけ使う。
+    """
+    if pedigree_since == "none" or "sire_id" not in df:
+        return df
+    if pedigree_since == "auto":
+        done = df[df["finish_pos"].notna()]
+        cov = done["sire_id"].notna().groupby(done["date"].dt.year).mean()
+        full = cov[cov >= min_coverage]
+        if full.empty:
+            start = df["date"].max() + pd.Timedelta(days=1)
+        else:
+            later = cov[cov.index >= full.index.min()]
+            # 充足率が一度そろった後に再び欠ける年があれば、その後から
+            bad = later[later < min_coverage - 0.1]
+            y = int(full.index.min()) if bad.empty else int(bad.index.max()) + 1
+            start = pd.Timestamp(f"{y}-01-01")
+    else:
+        start = pd.Timestamp(pedigree_since)
+    df = df.copy()
+    old = df["date"] < start
+    for c in ("sire_id", "damsire_id"):
+        if c in df:
+            df.loc[old, c] = np.nan
+    df.attrs["pedigree_since"] = str(start.date())
+    return df
+
+
 def load_db(path: str = "keiba.db", since: str = "2015-01-01",
-            odds_since: str | None = None, include_future: bool = False) -> pd.DataFrame:
+            odds_since: str | None = None, include_future: bool = False,
+            pedigree_since: str = "auto") -> pd.DataFrame:
     odds_since = odds_since or since
     conn = sqlite3.connect(path, timeout=15)
     try:
@@ -184,7 +220,7 @@ def load_db(path: str = "keiba.db", since: str = "2015-01-01",
     # odds_since より前の確定オッズは使わない
     old = out["finish_pos"].notna() & (out["date"] < pd.Timestamp(odds_since))
     out.loc[old, "odds_win"] = np.nan
-    return out
+    return mask_partial_pedigree(out, pedigree_since)
 
 
 def db_check(path: str = "keiba.db") -> str:

@@ -138,7 +138,7 @@ def test_explore_on_db(db):
     from keiba.features import EXTRA_FEATURES
     from keiba.sqlite_loader import load_payouts
     path, raw = db
-    df = load_db(path, since="2000-01-01")
+    df = load_db(path, since="2000-01-01", pedigree_since="none")   # モックは血統が2/3の馬にしか無い
     pay = load_payouts(path)
     assert set(pay["bet_type"]) == {"単勝", "複勝", "馬連", "ワイド", "3連複", "3連単"}
     assert all(isinstance(c, tuple) for c in pay["combo"])
@@ -200,5 +200,23 @@ def test_diagnose(db):
     from keiba.explore import diagnose
     path, _ = db
     text = diagnose(load_db(path, since="2000-01-01"), thr=1.0, log=lambda s: None)
-    for key in ("[D1]", "[D2]", "[D3]", "調教評価(train_ae)を外す", "追加ファクターを全部外す"):
+    for key in ("[D0]", "[D1]", "[D2]", "[D3]", "調教評価(train_ae)を外す", "追加ファクターを全部外す"):
         assert key in text
+
+
+def test_mask_partial_pedigree():
+    from keiba.sqlite_loader import mask_partial_pedigree
+    d = pd.DataFrame({"date": pd.to_datetime(["2020-05-01", "2021-05-01", "2022-05-01", "2023-05-01",
+                                              "2024-05-01"] * 20),
+                      "finish_pos": 1.0})
+    year = d["date"].dt.year
+    cov = {2020: 0.2, 2021: 0.4, 2022: 0.7, 2023: 1.0, 2024: 1.0}
+    rng = np.random.default_rng(0)
+    d["sire_id"] = np.where(rng.random(len(d)) < year.map(cov), "S", None)
+    d.loc[year >= 2023, "sire_id"] = "S"
+    d["damsire_id"] = d["sire_id"]
+    m = mask_partial_pedigree(d)
+    assert m.attrs["pedigree_since"] == "2023-01-01"
+    assert m.loc[m["date"] < "2023-01-01", ["sire_id", "damsire_id"]].isna().all().all()
+    assert m.loc[m["date"] >= "2023-01-01", "sire_id"].notna().all()
+    assert mask_partial_pedigree(d, "none")["sire_id"].notna().sum() == d["sire_id"].notna().sum()
