@@ -1,10 +1,10 @@
 {
-  "updated_at_jst": "2026-11-26T13:56:54+09:00",
-  "latest_market_date": "2026-11-25",
+  "updated_at_jst": "2026-11-27T07:38:49+09:00",
+  "latest_market_date": "2026-11-26",
   "stocks_total": 100,
   "stocks_success": 100,
   "stocks_failed": 0,
-  "rows": 15924,
+  "rows": 15925,
   "failed": [],
-  "prices_sha256": "c3426a57960683b52fe2986c090b7a9f6686aadb2b201924bbb2c653f766f47d"
+  "prices_sha256": "fadb232c83d85b6acf5170756fadec672629010c2c7e38ae6aeec858e7b411d6"
 }
